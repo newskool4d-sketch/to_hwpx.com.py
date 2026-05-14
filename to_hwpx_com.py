@@ -7,9 +7,11 @@ HWP COM 자동화로 Markdown / DOCX → HWPX 변환 (v1)
   v1 - md_to_hwpx_com v3 + docx_to_hwpx_com v1 통합
 """
 import win32com.client
+import math
 import re
 import os
 import time
+import unicodedata
 
 
 # ─── Markdown 파서 ─────────────────────────────────────────────────────────────
@@ -345,46 +347,229 @@ def set_para_shape(hwp, align=0, space_before=0, space_after=0,
 
 # ─── 표 열 너비 산정 ───────────────────────────────────────────────────────────
 
+TABLE_TOTAL_WIDTH = 14000
+TABLE_MIN_ROW_HEIGHT = 900
+TABLE_LINE_HEIGHT = 620
+TABLE_CELL_VPAD = 260
+TABLE_CELL_HPAD = 240
+TABLE_UNIT_PER_VISUAL = 135
+
+COLUMN_PROFILES = {
+    'index': {'min': 650, 'pref': 850, 'max': 1100, 'weight': 0.3},
+    'number': {'min': 900, 'pref': 1300, 'max': 1900, 'weight': 0.6},
+    'date': {'min': 1200, 'pref': 1700, 'max': 2300, 'weight': 0.7},
+    'name': {'min': 850, 'pref': 1200, 'max': 1700, 'weight': 0.5},
+    'position': {'min': 1000, 'pref': 1500, 'max': 2200, 'weight': 0.6},
+    'org': {'min': 1600, 'pref': 2500, 'max': 3600, 'weight': 1.0},
+    'title': {'min': 1700, 'pref': 2800, 'max': 4200, 'weight': 1.2},
+    'detail': {'min': 2200, 'pref': 4300, 'max': 8200, 'weight': 2.3},
+    'generic': {'min': 1200, 'pref': 1900, 'max': 3200, 'weight': 1.0},
+}
+
+DETAIL_HEADER_PATTERN = re.compile(
+    r'(내용|세부|비고|사유|설명|의견|주소|목적|방법|추진|계획|결과|특이|주요|개요|'
+    r'remark|note|description|detail|comment)',
+    re.IGNORECASE,
+)
+ORG_HEADER_PATTERN = re.compile(r'(기관|학교|부서|소속|단체|업체|교육청|지원청|org|organization|department)', re.IGNORECASE)
+TITLE_HEADER_PATTERN = re.compile(r'(명칭|제목|사업명|프로그램명|과정명|행사명|title|subject)', re.IGNORECASE)
+VALUE_HEADER_PATTERN = re.compile(r'^(값|내용|value)$', re.IGNORECASE)
+POSITION_HEADER_PATTERN = re.compile(r'(직위|직급|직책|보직|담당|role|position|rank)', re.IGNORECASE)
+NAME_HEADER_PATTERN = re.compile(r'(성명|이름|성함|신청자|담당자|name)', re.IGNORECASE)
+DATE_HEADER_PATTERN = re.compile(r'(일자|날짜|기간|시간|시각|연도|월일|date|time|period)', re.IGNORECASE)
+NUMBER_HEADER_PATTERN = re.compile(r'(금액|예산|단가|합계|수량|인원|계|원|명|건|회|비율|%|amount|price|total|count|number)', re.IGNORECASE)
+INDEX_HEADER_PATTERN = re.compile(r'^(순번|연번|번호|no\.?|#)$', re.IGNORECASE)
+NUMBER_VALUE_PATTERN = re.compile(r'^\s*[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*(?:원|명|건|회|%|개|점)?\s*$')
+DATE_VALUE_PATTERN = re.compile(r'^\s*\d{2,4}[./-]\d{1,2}(?:[./-]\d{1,2})?(?:\s*[-~]\s*\d{1,2}[./-]\d{1,2})?\s*$')
+
+
 def _visual_width(text):
     w = 0
-    for ch in text:
-        cp = ord(ch)
-        if (0xAC00 <= cp <= 0xD7A3
-                or 0x1100 <= cp <= 0x11FF
-                or 0xA960 <= cp <= 0xA97F
-                or 0xD7B0 <= cp <= 0xD7FF
-                or 0x4E00 <= cp <= 0x9FFF
-                or 0xFF00 <= cp <= 0xFFEF
-                or 0x3000 <= cp <= 0x303F):
+    for ch in str(text or ''):
+        if unicodedata.combining(ch):
+            continue
+        if unicodedata.east_asian_width(ch) in ('F', 'W'):
             w += 2
         else:
             w += 1
     return max(w, 1)
 
 
-def calc_col_widths(header, rows, total=14000):
+def _normalize_table_rows(header, rows):
     all_rows = ([header] if header else []) + (rows if rows else [])
-    n = len(header) if header else (len(all_rows[0]) if all_rows else 0)
+    n = max((len(row) for row in all_rows), default=0)
+    normalized = []
+    for row in all_rows:
+        values = [str(cell or '').strip() for cell in row]
+        normalized.append(values + [''] * (n - len(values)))
+    return normalized, n
+
+
+def _percentile(values, ratio):
+    if not values:
+        return 1
+    ordered = sorted(values)
+    idx = min(len(ordered) - 1, max(0, math.ceil(len(ordered) * ratio) - 1))
+    return ordered[idx]
+
+
+def _infer_col_kind(header_text, values, col_index):
+    header_text = str(header_text or '').strip()
+    body_values = [str(v or '').strip() for v in values if str(v or '').strip()]
+    if INDEX_HEADER_PATTERN.search(header_text):
+        return 'index'
+    if VALUE_HEADER_PATTERN.search(header_text):
+        return 'detail'
+    if DETAIL_HEADER_PATTERN.search(header_text):
+        return 'detail'
+    if ORG_HEADER_PATTERN.search(header_text):
+        return 'org'
+    if TITLE_HEADER_PATTERN.search(header_text):
+        return 'title'
+    if POSITION_HEADER_PATTERN.search(header_text):
+        return 'position'
+    if NAME_HEADER_PATTERN.search(header_text):
+        return 'name'
+    if DATE_HEADER_PATTERN.search(header_text):
+        return 'date'
+    if NUMBER_HEADER_PATTERN.search(header_text):
+        return 'number'
+    if col_index == 0 and body_values and all(_visual_width(v) <= 4 for v in body_values):
+        return 'index'
+    if body_values:
+        numeric_hits = sum(1 for v in body_values if NUMBER_VALUE_PATTERN.match(v))
+        date_hits = sum(1 for v in body_values if DATE_VALUE_PATTERN.match(v))
+        if numeric_hits / len(body_values) >= 0.75:
+            return 'number'
+        if date_hits / len(body_values) >= 0.6:
+            return 'date'
+        widths = [_visual_width(v) for v in body_values]
+        avg_width = sum(widths) / len(widths)
+        p90_width = _percentile(widths, 0.9)
+        if p90_width >= 28 or avg_width >= 18:
+            return 'detail'
+        if avg_width <= 8 and all(' ' not in v for v in body_values[:10]):
+            return 'name'
+    return 'generic'
+
+
+def _content_preferred_width(kind, header_text, values):
+    widths = [_visual_width(header_text)]
+    widths.extend(_visual_width(v) for v in values if str(v or '').strip())
+    p90 = _percentile(widths, 0.9)
+    longest = max(widths or [1])
+    if kind == 'detail':
+        visual_units = min(max(p90, 18), 42)
+    elif kind in ('org', 'title'):
+        visual_units = min(max(p90, 12), 28)
+    elif kind in ('number', 'date', 'position'):
+        visual_units = min(max(longest, 7), 18)
+    elif kind == 'index':
+        visual_units = min(max(longest, 3), 6)
+    else:
+        visual_units = min(max(p90, 8), 22)
+    return int(visual_units * TABLE_UNIT_PER_VISUAL + TABLE_CELL_HPAD)
+
+
+def _redistribute_widths(widths, kinds, total):
+    if not widths:
+        return []
+    profiles = [COLUMN_PROFILES[k] for k in kinds]
+    min_sum = sum(p['min'] for p in profiles)
+    if min_sum >= total:
+        result = [max(1, int(total * p['min'] / min_sum)) for p in profiles]
+    else:
+        result = widths[:]
+
+    overflow = sum(result) - total
+    if overflow > 0:
+        shrink_room = [max(0, result[i] - profiles[i]['min']) for i in range(len(result))]
+        room_sum = sum(shrink_room)
+        if room_sum > 0:
+            for i, room in enumerate(shrink_room):
+                cut = min(room, int(overflow * room / room_sum))
+                result[i] -= cut
+            overflow = sum(result) - total
+        while overflow > 0:
+            i = max(range(len(result)), key=lambda idx: result[idx] - profiles[idx]['min'])
+            if result[i] <= profiles[i]['min']:
+                break
+            result[i] -= 1
+            overflow -= 1
+    else:
+        extra = total - sum(result)
+        weights = [
+            profiles[i]['weight'] * max(0.25, profiles[i]['max'] - result[i])
+            for i in range(len(result))
+        ]
+        weight_sum = sum(weights)
+        if weight_sum > 0:
+            for i, weight in enumerate(weights):
+                add = min(profiles[i]['max'] - result[i], int(extra * weight / weight_sum))
+                result[i] += max(add, 0)
+            extra = total - sum(result)
+        while extra > 0:
+            growable = [i for i, p in enumerate(profiles) if result[i] < p['max']]
+            if not growable:
+                break
+            i = max(growable, key=lambda idx: profiles[idx]['weight'])
+            result[i] += 1
+            extra -= 1
+        if extra > 0:
+            soft_weights = [p['weight'] for p in profiles]
+            soft_sum = sum(soft_weights) or len(result)
+            for i, weight in enumerate(soft_weights):
+                add = int(extra * weight / soft_sum)
+                result[i] += add
+            extra = total - sum(result)
+            for i in range(extra):
+                result[i % len(result)] += 1
+
+    diff = total - sum(result)
+    if diff:
+        target = max(range(len(result)), key=lambda idx: profiles[idx]['weight'])
+        result[target] += diff
+    return result
+
+
+def calc_col_widths(header, rows, total=TABLE_TOTAL_WIDTH):
+    normalized, n = _normalize_table_rows(header or [], rows or [])
     if n == 0:
         return []
     if n == 1:
         return [total]
-    col_vis = []
+    kinds = []
+    preferred = []
     for ci in range(n):
-        max_w = 1
-        for row in all_rows:
-            if ci < len(row):
-                max_w = max(max_w, _visual_width(row[ci]))
-        col_vis.append(min(max_w, 50))
-    cap = int(total * 0.6)
-    col_vis = [min(w, cap) for w in col_vis]
-    total_vis = sum(col_vis) or 1
-    result = [max(1500, int(total * w / total_vis)) for w in col_vis]
-    diff = total - sum(result)
-    if diff != 0:
-        max_idx = result.index(max(result))
-        result[max_idx] += diff
-    return result
+        header_text = normalized[0][ci] if header else ''
+        values = [row[ci] for row in normalized[1 if header else 0:]]
+        kind = _infer_col_kind(header_text, values, ci)
+        profile = COLUMN_PROFILES[kind]
+        content_width = _content_preferred_width(kind, header_text, values)
+        kinds.append(kind)
+        preferred.append(max(profile['min'], min(profile['max'], max(profile['pref'], content_width))))
+    return _redistribute_widths(preferred, kinds, total)
+
+
+def calc_row_heights(header, rows, col_widths):
+    normalized, n = _normalize_table_rows(header or [], rows or [])
+    if not normalized or not col_widths:
+        return []
+    heights = []
+    for row in normalized:
+        max_lines = 1
+        for ci in range(n):
+            text = row[ci]
+            if not text:
+                continue
+            usable_width = max(300, col_widths[min(ci, len(col_widths) - 1)] - TABLE_CELL_HPAD)
+            capacity = max(2, int(usable_width / TABLE_UNIT_PER_VISUAL))
+            visual_lines = 0
+            for part in str(text).splitlines() or ['']:
+                visual_lines += max(1, math.ceil(_visual_width(part) / capacity))
+            max_lines = max(max_lines, visual_lines)
+        heights.append(max(TABLE_MIN_ROW_HEIGHT, TABLE_CELL_VPAD + max_lines * TABLE_LINE_HEIGHT))
+    return heights
 
 
 def insert_table(hwp, header, rows):
@@ -394,6 +579,7 @@ def insert_table(hwp, header, rows):
     num_rows = len(all_rows)
     num_cols = max(len(r) for r in all_rows)
     col_widths = calc_col_widths(header or [], rows)
+    row_heights = calc_row_heights(header or [], rows, col_widths)
     act = hwp.CreateAction('TableCreate')
     pset = act.CreateSet()
     act.GetDefault(pset)
@@ -402,20 +588,30 @@ def insert_table(hwp, header, rows):
     pset.SetItem('WidthType', 0)
     pset.SetItem('HeightType', 0)
     pset.SetItem('AutoHeight', True)
+    for key, value in (('WidthValue', sum(col_widths)), ('HeightValue', sum(row_heights))):
+        try:
+            pset.SetItem(key, value)
+        except Exception:
+            pass
     act.Execute(pset)
+    moved_right = 0
     try:
         for ci, w in enumerate(col_widths):
             sel_act = hwp.CreateAction('TableColWidth')
+            if sel_act is None:
+                raise RuntimeError('TableColWidth action unavailable')
             sel_pset = sel_act.CreateSet()
             sel_act.GetDefault(sel_pset)
             sel_pset.SetItem('Width', w)
             sel_act.Execute(sel_pset)
             if ci < num_cols - 1:
                 hwp.HAction.Run('TableRightCell')
-        for _ in range(num_cols - 1):
-            hwp.HAction.Run('TableLeftCell')
+                moved_right += 1
     except Exception as e:
         print(f'[경고] 열 너비 조정 실패: {e}')
+    finally:
+        for _ in range(moved_right):
+            hwp.HAction.Run('TableLeftCell')
     first_cell = True
     for ri, row in enumerate(all_rows):
         is_header = (ri == 0 and header is not None)
@@ -500,33 +696,21 @@ def build_doc(hwp, blocks):
             break_para(hwp)
 
 
-def _insert_end_mark(hwp, blocks):
-    if not blocks:
-        return
-    last = blocks[-1]
-    last_text = last.get('text', '') or ''
-    if last_text.strip().endswith('끝'):
-        return
-    if last['type'] == 'table':
-        last_rows = last.get('rows', [])
-        if last_rows:
-            last_row_text = ' '.join(last_rows[-1])
-            if last_row_text.strip().endswith('끝') or last_row_text.strip() == '이하 빈칸':
-                return
-        hwp.HAction.Run('MoveDocEnd')
-        set_para_shape(hwp, align=1)
-        set_char_shape(hwp, height=1300, font='body')
-        insert_text(hwp, ' 끝')
-        break_para(hwp)
-    else:
-        hwp.HAction.Run('MoveDocEnd')
-        set_para_shape(hwp, align=1)
-        set_char_shape(hwp, height=1300, font='body')
-        insert_text(hwp, '  끝')
-        break_para(hwp)
-
-
 # ─── 변환 실행 ─────────────────────────────────────────────────────────────────
+
+def build_output_path(src_path, output_dir):
+    base_name = os.path.splitext(os.path.basename(src_path))[0]
+    out_dir = os.path.abspath(output_dir) if output_dir else os.path.dirname(os.path.abspath(src_path))
+    os.makedirs(out_dir, exist_ok=True)
+    candidate = os.path.join(out_dir, base_name + '.hwpx')
+    if not os.path.exists(candidate):
+        return candidate
+    for idx in range(2, 1000):
+        candidate = os.path.join(out_dir, f'{base_name} - {idx}.hwpx')
+        if not os.path.exists(candidate):
+            return candidate
+    raise FileExistsError(f'저장 가능한 파일명을 찾지 못함: {os.path.join(out_dir, base_name + ".hwpx")}')
+
 
 def convert_file(hwp, src_path, hwpx_path):
     blocks = detect_and_parse(src_path)
@@ -537,7 +721,6 @@ def convert_file(hwp, src_path, hwpx_path):
 
     try:
         build_doc(hwp, blocks)
-        _insert_end_mark(hwp, blocks)
     except Exception as e:
         print(f'  [경고] 빌드 중 오류: {e}')
 
@@ -577,10 +760,7 @@ if __name__ == '__main__':
     try:
         for src_path in args.files:
             src_path = os.path.abspath(src_path)
-            base_name = os.path.splitext(os.path.basename(src_path))[0]
-            out_dir = os.path.abspath(args.output_dir) if args.output_dir else os.path.dirname(src_path)
-            os.makedirs(out_dir, exist_ok=True)
-            hwpx_path = os.path.join(out_dir, base_name + '.hwpx')
+            hwpx_path = build_output_path(src_path, args.output_dir)
             print(f'변환 중: {os.path.basename(src_path)} → {os.path.basename(hwpx_path)}')
             convert_file(hwp, src_path, hwpx_path)
     finally:
