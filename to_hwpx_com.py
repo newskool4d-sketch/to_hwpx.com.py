@@ -12,6 +12,10 @@ import re
 import os
 import time
 import unicodedata
+import zipfile
+import tempfile
+import shutil
+import xml.etree.ElementTree as ET
 
 
 # ─── Markdown 파서 ─────────────────────────────────────────────────────────────
@@ -354,6 +358,24 @@ TABLE_CELL_VPAD = 260
 TABLE_CELL_HPAD = 240
 TABLE_UNIT_PER_VISUAL = 135
 
+TABLE_HEADER_WIDTH_PROFILES = {
+    ('구분', '내용'): [25, 75],
+    ('구분', '주요 내용'): [25, 75],
+    ('방향', '내용'): [25, 75],
+    ('판단 사항', '검토 내용'): [30, 70],
+    ('기관·부서', '역할'): [30, 70],
+    ('번호', '문항', '유형'): [10, 75, 15],
+    ('시간', '내용', '담당'): [20, 60, 20],
+    ('단계', '내용', '시기'): [18, 62, 20],
+    ('구분', '인원', '역할'): [20, 15, 65],
+}
+
+TABLE_DEFAULT_WIDTH_PROFILES = {
+    2: [28, 72],
+    3: [18, 62, 20],
+    4: [15, 35, 25, 25],
+}
+
 COLUMN_PROFILES = {
     'index': {'min': 650, 'pref': 850, 'max': 1100, 'weight': 0.3},
     'number': {'min': 900, 'pref': 1300, 'max': 1900, 'weight': 0.6},
@@ -532,12 +554,38 @@ def _redistribute_widths(widths, kinds, total):
     return result
 
 
+def _profile_to_widths(profile, total=TABLE_TOTAL_WIDTH):
+    if not profile:
+        return []
+    width_sum = sum(profile)
+    if width_sum <= 0:
+        return []
+    widths = [max(1, int(total * value / width_sum)) for value in profile]
+    diff = total - sum(widths)
+    if diff:
+        target = max(range(len(widths)), key=lambda idx: profile[idx])
+        widths[target] += diff
+    return widths
+
+
+def _table_header_profile(header, col_count):
+    normalized_header = tuple(str(cell or '').strip() for cell in (header or []))
+    if normalized_header in TABLE_HEADER_WIDTH_PROFILES:
+        return TABLE_HEADER_WIDTH_PROFILES[normalized_header]
+    if col_count in TABLE_DEFAULT_WIDTH_PROFILES:
+        return TABLE_DEFAULT_WIDTH_PROFILES[col_count]
+    return None
+
+
 def calc_col_widths(header, rows, total=TABLE_TOTAL_WIDTH):
     normalized, n = _normalize_table_rows(header or [], rows or [])
     if n == 0:
         return []
     if n == 1:
         return [total]
+    profile = _table_header_profile(header or [], n)
+    if profile and len(profile) == n:
+        return _profile_to_widths(profile, total)
     kinds = []
     preferred = []
     for ci in range(n):
@@ -570,6 +618,77 @@ def calc_row_heights(header, rows, col_widths):
             max_lines = max(max_lines, visual_lines)
         heights.append(max(TABLE_MIN_ROW_HEIGHT, TABLE_CELL_VPAD + max_lines * TABLE_LINE_HEIGHT))
     return heights
+
+
+def _extract_plain_text(elem):
+    return ''.join(elem.itertext()).strip()
+
+
+def _rewrite_zip_entry(zip_path, entry_name, data):
+    src = os.fspath(zip_path)
+    fd, tmp_name = tempfile.mkstemp(suffix='.hwpx')
+    os.close(fd)
+    try:
+        with zipfile.ZipFile(src, 'r') as zin, zipfile.ZipFile(tmp_name, 'w') as zout:
+            for item in zin.infolist():
+                content = data if item.filename == entry_name else zin.read(item.filename)
+                zi = zipfile.ZipInfo(item.filename, item.date_time)
+                zi.comment = item.comment
+                zi.extra = item.extra
+                zi.internal_attr = item.internal_attr
+                zi.external_attr = item.external_attr
+                zi.create_system = item.create_system
+                zi.compress_type = item.compress_type
+                zout.writestr(zi, content)
+        shutil.move(tmp_name, src)
+    finally:
+        if os.path.exists(tmp_name):
+            os.remove(tmp_name)
+
+
+def apply_table_width_profiles(hwpx_path, table_headers):
+    if not table_headers or not os.path.exists(hwpx_path):
+        return
+    ns = {'hp': 'http://www.hancom.co.kr/hwpml/2011/paragraph'}
+    section_name = 'Contents/section0.xml'
+    try:
+        with zipfile.ZipFile(hwpx_path, 'r') as zf:
+            section_xml = zf.read(section_name)
+    except Exception as e:
+        print(f'  [경고] 표 폭 후처리 준비 실패: {e}')
+        return
+    try:
+        ET.register_namespace('hp', ns['hp'])
+        root = ET.fromstring(section_xml)
+        changed = False
+        tables = root.findall('.//hp:tbl', ns)
+        for ti, tbl in enumerate(tables):
+            if ti >= len(table_headers):
+                break
+            col_count = int(tbl.attrib.get('colCnt', '0') or 0)
+            if col_count <= 1:
+                continue
+            profile = _table_header_profile(table_headers[ti], col_count)
+            if not profile or len(profile) != col_count:
+                continue
+            total_width = TABLE_TOTAL_WIDTH
+            sz = tbl.find('hp:sz', ns)
+            if sz is not None:
+                total_width = int(sz.attrib.get('width', total_width) or total_width)
+            widths = _profile_to_widths(profile, total_width)
+            for tc in tbl.findall('.//hp:tc', ns):
+                cell_addr = tc.find('hp:cellAddr', ns)
+                cell_sz = tc.find('hp:cellSz', ns)
+                if cell_addr is None or cell_sz is None:
+                    continue
+                col = int(cell_addr.attrib.get('colAddr', '0') or 0)
+                if 0 <= col < len(widths):
+                    cell_sz.set('width', str(widths[col]))
+                    changed = True
+        if changed:
+            _rewrite_zip_entry(hwpx_path, section_name, ET.tostring(root, encoding='utf-8', xml_declaration=True))
+    except Exception as e:
+        print(f'  [경고] 표 폭 후처리 실패: {e}')
 
 
 def insert_table(hwp, header, rows):
@@ -714,6 +833,7 @@ def build_output_path(src_path, output_dir):
 
 def convert_file(hwp, src_path, hwpx_path):
     blocks = detect_and_parse(src_path)
+    table_headers = [blk.get('header') or [] for blk in blocks if blk.get('type') == 'table']
 
     hwp.XHwpDocuments.Add(isTab=False)
     time.sleep(0.5)
@@ -727,6 +847,7 @@ def convert_file(hwp, src_path, hwpx_path):
     hwp.SaveAs(hwpx_path, 'HWPX', '')
     time.sleep(0.5)
     doc.Close(isDirty=False)
+    apply_table_width_profiles(hwpx_path, table_headers)
     time.sleep(0.3)
     ext = os.path.splitext(src_path)[1].upper().lstrip('.')
     print(f'[완료] {ext} → {os.path.basename(hwpx_path)}')
