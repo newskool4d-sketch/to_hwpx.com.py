@@ -10,18 +10,22 @@ HWP COM 자동화로 Markdown / TXT / DOCX / HTML / CSV / XLSX / PDF → HWPX �
 import argparse
 import csv
 import json
-import math
 import re
 import os
 import subprocess
 import sys
 import time
-import unicodedata
-import zipfile
 import tempfile
-import shutil
-import xml.etree.ElementTree as ET
 from pathlib import Path
+
+from document_hierarchy import parse_hierarchy_item
+from hwp_writer import _insert_end_mark, build_doc
+from markdown_table_parser import (
+    is_markdown_table_separator,
+    normalize_parsed_table,
+    parse_markdown_table_row,
+)
+from table_hwpx_postprocess import apply_table_width_profiles
 
 
 def _configure_utf8_stdio():
@@ -79,43 +83,17 @@ def _clean_inline(text):
     text = re.sub(r'<[^>]+>', '', text)
     return text.strip()
 
-def _is_separator(line):
-    if len(line) > 500:
-        return False
-    cells = line.strip().strip('|').split('|')
-    return len(cells) >= 1 and all(re.match(r'^[ \t]*:?-+:?[ \t]*$', c) for c in cells)
-
-def _parse_table_row(line):
-    line = line.strip().strip('|')
-    return [_clean_inline(c.strip()) for c in line.split('|')]
-
 def _detect_list_item(line):
-    """
-    한국 행정문서 8단계 항목 체계 감지.
-    Returns (depth, display_text) or None.
-    depth: 0=1./- , 1=가., 2=1), 3=가), 4=(1), 5=(가), 6=①, 7=㉮
-    """
-    stripped = line.strip()
-    checks = [
-        (7, re.compile(r'^([㉮㉯㉰㉱㉲㉳㉴㉵㉶㉷])\s+(.*)')),
-        (6, re.compile(r'^([①②③④⑤⑥⑦⑧⑨⑩])\s+(.*)')),
-        (5, re.compile(r'^(\([가나다라마바사아자차카타파하]\))\s+(.*)')),
-        (4, re.compile(r'^(\(\d+\))\s+(.*)')),
-        (3, re.compile(r'^([가나다라마바사아자차카타파하]\))\s+(.*)')),
-        (2, re.compile(r'^(\d+\))\s+(.*)')),
-        (1, re.compile(r'^([가나다라마바사아자차카타파하]\.)\s+(.*)')),
-        (0, re.compile(r'^(\d+\.)\s+(.*)')),
-    ]
-    for depth, pattern in checks:
-        m = pattern.match(stripped)
-        if m:
-            marker = m.group(1)
-            content = _clean_inline(m.group(2))
-            return (depth, f'{marker} {content}')
-    m = re.match(r'^[-*]\s+(.*)', stripped)
-    if m:
-        return (0, '• ' + _clean_inline(m.group(1)))
-    return None
+    item = parse_hierarchy_item(line)
+    if item is None:
+        return None
+    content = _clean_inline(item.content)
+    return {
+        'depth': item.depth,
+        'text': f'{item.marker} {content}',
+        'marker': item.marker,
+        'content': content,
+    }
 
 
 def parse_markdown(text):
@@ -175,21 +153,21 @@ def parse_markdown(text):
             continue
 
         # 표
-        if line.strip().startswith('|') and i + 1 < len(lines) and _is_separator(lines[i + 1]):
-            header = _parse_table_row(line)
+        if line.strip().startswith('|') and i + 1 < len(lines) and is_markdown_table_separator(lines[i + 1]):
+            header = parse_markdown_table_row(line, _clean_inline)
             i += 2
             rows = []
             while i < len(lines) and lines[i].strip().startswith('|'):
-                rows.append(_parse_table_row(lines[i]))
+                rows.append(parse_markdown_table_row(lines[i], _clean_inline))
                 i += 1
+            header, rows = normalize_parsed_table(header, rows)
             blocks.append({'type': 'table', 'header': header, 'rows': rows})
             continue
 
         # 항목 체계 (8단계)
-        li_result = _detect_list_item(line)
-        if li_result:
-            depth, text = li_result
-            blocks.append({'type': 'li', 'text': text, 'depth': depth})
+        item = _detect_list_item(line)
+        if item:
+            blocks.append({'type': 'li', **item})
             i += 1
             continue
 
@@ -231,10 +209,9 @@ def parse_plain_text(text):
         line = raw_line.strip()
         if not line:
             continue
-        li_result = _detect_list_item(line)
-        if li_result:
-            depth, item_text = li_result
-            blocks.append({'type': 'li', 'text': item_text, 'depth': depth})
+        item = _detect_list_item(line)
+        if item:
+            blocks.append({'type': 'li', **item})
         else:
             blocks.append({'type': 'p', 'text': _clean_inline(line)})
     return blocks
@@ -751,530 +728,6 @@ def run_hwp_preflight(visible=False, timeout=45):
         return output or 'HWP COM preflight OK'
     raise RuntimeError(error or output or 'HWP COM preflight failed.')
 
-
-def insert_text(hwp, text):
-    hwp.HAction.GetDefault('InsertText', hwp.HParameterSet.HInsertText.HSet)
-    hwp.HParameterSet.HInsertText.Text = text
-    hwp.HAction.Execute('InsertText', hwp.HParameterSet.HInsertText.HSet)
-
-def break_para(hwp):
-    hwp.HAction.Run('BreakPara')
-
-def set_char_shape(hwp, height=1300, bold=False, italic=False, font='body'):
-    face_hangul = '휴먼명조' if font == 'body' else '맑은 고딕'
-    face_latin  = 'Arial'
-    act = hwp.CreateAction('CharShape')
-    pset = act.CreateSet()
-    act.GetDefault(pset)
-    pset.SetItem('Height', height)
-    pset.SetItem('Bold', bold)
-    pset.SetItem('Italic', italic)
-    pset.SetItem('FaceNameHangul', face_hangul)
-    pset.SetItem('FaceNameLatin', face_latin)
-    act.Execute(pset)
-
-def set_para_shape(hwp, align=0, space_before=0, space_after=0,
-                   indent_left=0, indent_first=0):
-    act = hwp.CreateAction('ParagraphShape')
-    pset = act.CreateSet()
-    act.GetDefault(pset)
-    pset.SetItem('Align', align)
-    pset.SetItem('SpaceBefore', space_before)
-    pset.SetItem('SpaceAfter', space_after)
-    pset.SetItem('IndentLeft', indent_left)
-    pset.SetItem('IndentFirst', indent_first)
-    act.Execute(pset)
-
-
-# ─── 표 열 너비 산정 ───────────────────────────────────────────────────────────
-
-TABLE_TOTAL_WIDTH = 14000
-TABLE_MIN_ROW_HEIGHT = 900
-TABLE_LINE_HEIGHT = 620
-TABLE_CELL_VPAD = 260
-TABLE_CELL_HPAD = 240
-TABLE_UNIT_PER_VISUAL = 135
-
-TABLE_HEADER_WIDTH_PROFILES = {
-    ('구분', '내용'): [25, 75],
-    ('구분', '주요 내용'): [25, 75],
-    ('방향', '내용'): [25, 75],
-    ('판단 사항', '검토 내용'): [30, 70],
-    ('기관·부서', '역할'): [30, 70],
-    ('번호', '문항', '유형'): [10, 75, 15],
-    ('시간', '내용', '담당'): [20, 60, 20],
-    ('단계', '내용', '시기'): [18, 62, 20],
-    ('구분', '인원', '역할'): [20, 15, 65],
-}
-
-TABLE_DEFAULT_WIDTH_PROFILES = {
-    2: [28, 72],
-    3: [18, 62, 20],
-    4: [15, 35, 25, 25],
-}
-
-COLUMN_PROFILES = {
-    'index': {'min': 650, 'pref': 850, 'max': 1100, 'weight': 0.3},
-    'number': {'min': 900, 'pref': 1300, 'max': 1900, 'weight': 0.6},
-    'date': {'min': 1200, 'pref': 1700, 'max': 2300, 'weight': 0.7},
-    'name': {'min': 850, 'pref': 1200, 'max': 1700, 'weight': 0.5},
-    'position': {'min': 1000, 'pref': 1500, 'max': 2200, 'weight': 0.6},
-    'org': {'min': 1600, 'pref': 2500, 'max': 3600, 'weight': 1.0},
-    'title': {'min': 1700, 'pref': 2800, 'max': 4200, 'weight': 1.2},
-    'detail': {'min': 2200, 'pref': 4300, 'max': 8200, 'weight': 2.3},
-    'generic': {'min': 1200, 'pref': 1900, 'max': 3200, 'weight': 1.0},
-}
-
-DETAIL_HEADER_PATTERN = re.compile(
-    r'(내용|세부|비고|사유|설명|의견|주소|목적|방법|추진|계획|결과|특이|주요|개요|'
-    r'remark|note|description|detail|comment)',
-    re.IGNORECASE,
-)
-ORG_HEADER_PATTERN = re.compile(r'(기관|학교|부서|소속|단체|업체|교육청|지원청|org|organization|department)', re.IGNORECASE)
-TITLE_HEADER_PATTERN = re.compile(r'(명칭|제목|사업명|프로그램명|과정명|행사명|title|subject)', re.IGNORECASE)
-VALUE_HEADER_PATTERN = re.compile(r'^(값|내용|value)$', re.IGNORECASE)
-POSITION_HEADER_PATTERN = re.compile(r'(직위|직급|직책|보직|담당|role|position|rank)', re.IGNORECASE)
-NAME_HEADER_PATTERN = re.compile(r'(성명|이름|성함|신청자|담당자|name)', re.IGNORECASE)
-DATE_HEADER_PATTERN = re.compile(r'(일자|날짜|기간|시간|시각|연도|월일|date|time|period)', re.IGNORECASE)
-NUMBER_HEADER_PATTERN = re.compile(r'(금액|예산|단가|합계|수량|인원|계|원|명|건|회|비율|%|amount|price|total|count|number)', re.IGNORECASE)
-INDEX_HEADER_PATTERN = re.compile(r'^(순번|연번|번호|no\.?|#)$', re.IGNORECASE)
-NUMBER_VALUE_PATTERN = re.compile(r'^\s*[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*(?:원|명|건|회|%|개|점)?\s*$')
-DATE_VALUE_PATTERN = re.compile(r'^\s*\d{2,4}[./-]\d{1,2}(?:[./-]\d{1,2})?(?:\s*[-~]\s*\d{1,2}[./-]\d{1,2})?\s*$')
-
-
-def _visual_width(text):
-    w = 0
-    for ch in str(text or ''):
-        if unicodedata.combining(ch):
-            continue
-        if unicodedata.east_asian_width(ch) in ('F', 'W'):
-            w += 2
-        else:
-            w += 1
-    return max(w, 1)
-
-
-def _normalize_table_rows(header, rows):
-    all_rows = ([header] if header else []) + (rows if rows else [])
-    n = max((len(row) for row in all_rows), default=0)
-    normalized = []
-    for row in all_rows:
-        values = [str(cell or '').strip() for cell in row]
-        normalized.append(values + [''] * (n - len(values)))
-    return normalized, n
-
-
-def _percentile(values, ratio):
-    if not values:
-        return 1
-    ordered = sorted(values)
-    idx = min(len(ordered) - 1, max(0, math.ceil(len(ordered) * ratio) - 1))
-    return ordered[idx]
-
-
-def _infer_col_kind(header_text, values, col_index):
-    header_text = str(header_text or '').strip()
-    body_values = [str(v or '').strip() for v in values if str(v or '').strip()]
-    if INDEX_HEADER_PATTERN.search(header_text):
-        return 'index'
-    if VALUE_HEADER_PATTERN.search(header_text):
-        return 'detail'
-    if DETAIL_HEADER_PATTERN.search(header_text):
-        return 'detail'
-    if ORG_HEADER_PATTERN.search(header_text):
-        return 'org'
-    if TITLE_HEADER_PATTERN.search(header_text):
-        return 'title'
-    if POSITION_HEADER_PATTERN.search(header_text):
-        return 'position'
-    if NAME_HEADER_PATTERN.search(header_text):
-        return 'name'
-    if DATE_HEADER_PATTERN.search(header_text):
-        return 'date'
-    if NUMBER_HEADER_PATTERN.search(header_text):
-        return 'number'
-    if col_index == 0 and body_values and all(_visual_width(v) <= 4 for v in body_values):
-        return 'index'
-    if body_values:
-        numeric_hits = sum(1 for v in body_values if NUMBER_VALUE_PATTERN.match(v))
-        date_hits = sum(1 for v in body_values if DATE_VALUE_PATTERN.match(v))
-        if numeric_hits / len(body_values) >= 0.75:
-            return 'number'
-        if date_hits / len(body_values) >= 0.6:
-            return 'date'
-        widths = [_visual_width(v) for v in body_values]
-        avg_width = sum(widths) / len(widths)
-        p90_width = _percentile(widths, 0.9)
-        if p90_width >= 28 or avg_width >= 18:
-            return 'detail'
-        if avg_width <= 8 and all(' ' not in v for v in body_values[:10]):
-            return 'name'
-    return 'generic'
-
-
-def _content_preferred_width(kind, header_text, values):
-    widths = [_visual_width(header_text)]
-    widths.extend(_visual_width(v) for v in values if str(v or '').strip())
-    p90 = _percentile(widths, 0.9)
-    longest = max(widths or [1])
-    if kind == 'detail':
-        visual_units = min(max(p90, 18), 42)
-    elif kind in ('org', 'title'):
-        visual_units = min(max(p90, 12), 28)
-    elif kind in ('number', 'date', 'position'):
-        visual_units = min(max(longest, 7), 18)
-    elif kind == 'index':
-        visual_units = min(max(longest, 3), 6)
-    else:
-        visual_units = min(max(p90, 8), 22)
-    return int(visual_units * TABLE_UNIT_PER_VISUAL + TABLE_CELL_HPAD)
-
-
-def _redistribute_widths(widths, kinds, total):
-    if not widths:
-        return []
-    profiles = [COLUMN_PROFILES[k] for k in kinds]
-    min_sum = sum(p['min'] for p in profiles)
-    if min_sum >= total:
-        result = [max(1, int(total * p['min'] / min_sum)) for p in profiles]
-    else:
-        result = widths[:]
-
-    overflow = sum(result) - total
-    if overflow > 0:
-        shrink_room = [max(0, result[i] - profiles[i]['min']) for i in range(len(result))]
-        room_sum = sum(shrink_room)
-        if room_sum > 0:
-            for i, room in enumerate(shrink_room):
-                cut = min(room, int(overflow * room / room_sum))
-                result[i] -= cut
-            overflow = sum(result) - total
-        while overflow > 0:
-            i = max(range(len(result)), key=lambda idx: result[idx] - profiles[idx]['min'])
-            if result[i] <= profiles[i]['min']:
-                break
-            result[i] -= 1
-            overflow -= 1
-    else:
-        extra = total - sum(result)
-        weights = [
-            profiles[i]['weight'] * max(0.25, profiles[i]['max'] - result[i])
-            for i in range(len(result))
-        ]
-        weight_sum = sum(weights)
-        if weight_sum > 0:
-            for i, weight in enumerate(weights):
-                add = min(profiles[i]['max'] - result[i], int(extra * weight / weight_sum))
-                result[i] += max(add, 0)
-            extra = total - sum(result)
-        while extra > 0:
-            growable = [i for i, p in enumerate(profiles) if result[i] < p['max']]
-            if not growable:
-                break
-            i = max(growable, key=lambda idx: profiles[idx]['weight'])
-            result[i] += 1
-            extra -= 1
-        if extra > 0:
-            soft_weights = [p['weight'] for p in profiles]
-            soft_sum = sum(soft_weights) or len(result)
-            for i, weight in enumerate(soft_weights):
-                add = int(extra * weight / soft_sum)
-                result[i] += add
-            extra = total - sum(result)
-            for i in range(extra):
-                result[i % len(result)] += 1
-
-    diff = total - sum(result)
-    if diff:
-        target = max(range(len(result)), key=lambda idx: profiles[idx]['weight'])
-        result[target] += diff
-    return result
-
-
-def _profile_to_widths(profile, total=TABLE_TOTAL_WIDTH):
-    if not profile:
-        return []
-    width_sum = sum(profile)
-    if width_sum <= 0:
-        return []
-    widths = [max(1, int(total * value / width_sum)) for value in profile]
-    diff = total - sum(widths)
-    if diff:
-        target = max(range(len(widths)), key=lambda idx: profile[idx])
-        widths[target] += diff
-    return widths
-
-
-def _table_header_profile(header, col_count):
-    normalized_header = tuple(str(cell or '').strip() for cell in (header or []))
-    if normalized_header in TABLE_HEADER_WIDTH_PROFILES:
-        return TABLE_HEADER_WIDTH_PROFILES[normalized_header]
-    if col_count in TABLE_DEFAULT_WIDTH_PROFILES:
-        return TABLE_DEFAULT_WIDTH_PROFILES[col_count]
-    return None
-
-
-def calc_col_widths(header, rows, total=TABLE_TOTAL_WIDTH):
-    normalized, n = _normalize_table_rows(header or [], rows or [])
-    if n == 0:
-        return []
-    if n == 1:
-        return [total]
-    profile = _table_header_profile(header or [], n)
-    if profile and len(profile) == n:
-        return _profile_to_widths(profile, total)
-    kinds = []
-    preferred = []
-    for ci in range(n):
-        header_text = normalized[0][ci] if header else ''
-        values = [row[ci] for row in normalized[1 if header else 0:]]
-        kind = _infer_col_kind(header_text, values, ci)
-        profile = COLUMN_PROFILES[kind]
-        content_width = _content_preferred_width(kind, header_text, values)
-        kinds.append(kind)
-        preferred.append(max(profile['min'], min(profile['max'], max(profile['pref'], content_width))))
-    return _redistribute_widths(preferred, kinds, total)
-
-
-def calc_row_heights(header, rows, col_widths):
-    normalized, n = _normalize_table_rows(header or [], rows or [])
-    if not normalized or not col_widths:
-        return []
-    heights = []
-    for row in normalized:
-        max_lines = 1
-        for ci in range(n):
-            text = row[ci]
-            if not text:
-                continue
-            usable_width = max(300, col_widths[min(ci, len(col_widths) - 1)] - TABLE_CELL_HPAD)
-            capacity = max(2, int(usable_width / TABLE_UNIT_PER_VISUAL))
-            visual_lines = 0
-            for part in str(text).splitlines() or ['']:
-                visual_lines += max(1, math.ceil(_visual_width(part) / capacity))
-            max_lines = max(max_lines, visual_lines)
-        heights.append(max(TABLE_MIN_ROW_HEIGHT, TABLE_CELL_VPAD + max_lines * TABLE_LINE_HEIGHT))
-    return heights
-
-
-def _rewrite_zip_entry(zip_path, entry_name, data):
-    src = os.fspath(zip_path)
-    fd, tmp_name = tempfile.mkstemp(suffix='.hwpx')
-    os.close(fd)
-    try:
-        with zipfile.ZipFile(src, 'r') as zin, zipfile.ZipFile(tmp_name, 'w') as zout:
-            for item in zin.infolist():
-                content = data if item.filename == entry_name else zin.read(item.filename)
-                zi = zipfile.ZipInfo(item.filename, item.date_time)
-                zi.comment = item.comment
-                zi.extra = item.extra
-                zi.internal_attr = item.internal_attr
-                zi.external_attr = item.external_attr
-                zi.create_system = item.create_system
-                zi.compress_type = item.compress_type
-                zout.writestr(zi, content)
-        shutil.move(tmp_name, src)
-    finally:
-        if os.path.exists(tmp_name):
-            os.remove(tmp_name)
-
-
-def apply_table_width_profiles(hwpx_path, table_headers):
-    if not table_headers or not os.path.exists(hwpx_path):
-        return
-    ns = {'hp': 'http://www.hancom.co.kr/hwpml/2011/paragraph'}
-    section_name = 'Contents/section0.xml'
-    try:
-        with zipfile.ZipFile(hwpx_path, 'r') as zf:
-            section_xml = zf.read(section_name)
-    except Exception as e:
-        print(f'  [경고] 표 폭 후처리 준비 실패: {e}')
-        return
-    try:
-        ET.register_namespace('hp', ns['hp'])
-        root = ET.fromstring(section_xml)
-        changed = False
-        tables = root.findall('.//hp:tbl', ns)
-        for ti, tbl in enumerate(tables):
-            if ti >= len(table_headers):
-                break
-            col_count = int(tbl.attrib.get('colCnt', '0') or 0)
-            if col_count <= 1:
-                continue
-            profile = _table_header_profile(table_headers[ti], col_count)
-            if not profile or len(profile) != col_count:
-                continue
-            total_width = TABLE_TOTAL_WIDTH
-            sz = tbl.find('hp:sz', ns)
-            if sz is not None:
-                total_width = int(sz.attrib.get('width', total_width) or total_width)
-            widths = _profile_to_widths(profile, total_width)
-            for tc in tbl.findall('.//hp:tc', ns):
-                cell_addr = tc.find('hp:cellAddr', ns)
-                cell_sz = tc.find('hp:cellSz', ns)
-                if cell_addr is None or cell_sz is None:
-                    continue
-                col = int(cell_addr.attrib.get('colAddr', '0') or 0)
-                if 0 <= col < len(widths):
-                    cell_sz.set('width', str(widths[col]))
-                    changed = True
-        if changed:
-            _rewrite_zip_entry(hwpx_path, section_name, ET.tostring(root, encoding='utf-8', xml_declaration=True))
-    except Exception as e:
-        print(f'  [경고] 표 폭 후처리 실패: {e}')
-
-
-def insert_table(hwp, header, rows):
-    all_rows = ([header] if header else []) + rows
-    if not all_rows:
-        return
-    num_rows = len(all_rows)
-    num_cols = max(len(r) for r in all_rows)
-    col_widths = calc_col_widths(header or [], rows)
-    row_heights = calc_row_heights(header or [], rows, col_widths)
-    act = hwp.CreateAction('TableCreate')
-    pset = act.CreateSet()
-    act.GetDefault(pset)
-    pset.SetItem('Rows', num_rows)
-    pset.SetItem('Cols', num_cols)
-    pset.SetItem('WidthType', 0)
-    pset.SetItem('HeightType', 0)
-    pset.SetItem('AutoHeight', True)
-    for key, value in (('WidthValue', sum(col_widths)), ('HeightValue', sum(row_heights))):
-        try:
-            pset.SetItem(key, value)
-        except Exception:
-            pass
-    act.Execute(pset)
-    moved_right = 0
-    try:
-        for ci, w in enumerate(col_widths):
-            sel_act = hwp.CreateAction('TableColWidth')
-            if sel_act is None:
-                raise RuntimeError('TableColWidth action unavailable')
-            sel_pset = sel_act.CreateSet()
-            sel_act.GetDefault(sel_pset)
-            sel_pset.SetItem('Width', w)
-            sel_act.Execute(sel_pset)
-            if ci < num_cols - 1:
-                hwp.HAction.Run('TableRightCell')
-                moved_right += 1
-    except Exception as e:
-        print(f'[경고] 열 너비 조정 실패: {e}')
-    finally:
-        for _ in range(moved_right):
-            hwp.HAction.Run('TableLeftCell')
-    first_cell = True
-    for ri, row in enumerate(all_rows):
-        is_header = (ri == 0 and header is not None)
-        for ci in range(num_cols):
-            if not first_cell:
-                hwp.HAction.Run('TableRightCell')
-            first_cell = False
-            cell_text = row[ci] if ci < len(row) else ''
-            if is_header:
-                set_para_shape(hwp, align=3)
-                set_char_shape(hwp, height=1200, bold=True, font='table')
-            else:
-                set_para_shape(hwp, align=1)
-                set_char_shape(hwp, height=1200, font='table')
-            if cell_text:
-                insert_text(hwp, cell_text)
-    hwp.HAction.Run('MoveDocEnd')
-    break_para(hwp)
-
-
-# ─── 문서 빌드 ─────────────────────────────────────────────────────────────────
-
-def build_doc(hwp, blocks):
-    for blk in blocks:
-        t = blk.get('type')
-
-        if t == 'h':
-            lv = blk['level']
-            heights = {1: 1600, 2: 1400, 3: 1300}
-            sbefore = {1: 500,  2: 400,  3: 300}
-            safter  = {1: 250,  2: 200,  3: 150}
-            set_para_shape(hwp, align=1,
-                           space_before=sbefore.get(lv, 300),
-                           space_after=safter.get(lv, 150))
-            set_char_shape(hwp, height=heights.get(lv, 1300), bold=True, font='body')
-            insert_text(hwp, blk['text'])
-            break_para(hwp)
-            set_para_shape(hwp, align=0)
-            set_char_shape(hwp, height=1300, font='body')
-
-        elif t == 'p':
-            set_para_shape(hwp, align=0)
-            set_char_shape(hwp, height=1300, font='body')
-            insert_text(hwp, blk['text'])
-            break_para(hwp)
-
-        elif t == 'li':
-            depth = blk.get('depth', 0)
-            set_para_shape(hwp, align=1, indent_left=depth * 400, indent_first=0)
-            set_char_shape(hwp, height=1300, font='body')
-            insert_text(hwp, blk['text'])
-            break_para(hwp)
-
-        elif t == 'bq':
-            set_para_shape(hwp, align=1, indent_left=600)
-            set_char_shape(hwp, height=1200, italic=True, font='body')
-            insert_text(hwp, blk['text'])
-            break_para(hwp)
-
-        elif t == 'code':
-            set_para_shape(hwp, align=1, indent_left=600)
-            set_char_shape(hwp, height=1100, font='table')
-            insert_text(hwp, blk['text'])
-            break_para(hwp)
-
-        elif t == 'hr':
-            set_para_shape(hwp, align=3)
-            set_char_shape(hwp, height=1000, font='body')
-            insert_text(hwp, '─' * 30)
-            break_para(hwp)
-
-        elif t == 'table':
-            set_para_shape(hwp, align=0)
-            set_char_shape(hwp, height=1200, font='table')
-            insert_table(hwp, blk.get('header'), blk.get('rows', []))
-
-        elif t == 'official_header':
-            set_para_shape(hwp, align=1)
-            set_char_shape(hwp, height=1200, font='table')
-            label = blk['key'].ljust(4)
-            insert_text(hwp, label + '  ' + blk['value'])
-            break_para(hwp)
-
-
-def _insert_end_mark(hwp, blocks):
-    if not blocks:
-        return
-    last = blocks[-1]
-    last_text = last.get('text', '') or ''
-    if last_text.strip().endswith('끝'):
-        return
-    if last['type'] == 'table':
-        last_rows = last.get('rows', [])
-        if last_rows:
-            last_row_text = ' '.join(last_rows[-1])
-            if last_row_text.strip().endswith('끝') or last_row_text.strip() == '이하 빈칸':
-                return
-        hwp.HAction.Run('MoveDocEnd')
-        set_para_shape(hwp, align=1)
-        set_char_shape(hwp, height=1300, font='body')
-        insert_text(hwp, ' 끝')
-        break_para(hwp)
-    else:
-        hwp.HAction.Run('MoveDocEnd')
-        set_para_shape(hwp, align=1)
-        set_char_shape(hwp, height=1300, font='body')
-        insert_text(hwp, '  끝')
-        break_para(hwp)
-
-
-# ─── 변환 실행 ─────────────────────────────────────────────────────────────────
 
 def build_output_path(src_path, output_dir):
     base_name = os.path.splitext(os.path.basename(src_path))[0]
