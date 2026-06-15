@@ -1,5 +1,24 @@
+import importlib
+import sys
+
 from document_hierarchy import hwp_com_style, parse_hierarchy_item
 from table_settings import calc_col_widths, calc_row_heights
+
+
+class HwpActionUnavailableError(RuntimeError):
+    pass
+
+
+def hwp_runtime_exception_types() -> tuple[type[BaseException], ...]:
+    base_types: list[type[BaseException]] = [RuntimeError, AttributeError, OSError, TypeError]
+    try:
+        pywintypes = importlib.import_module("pywintypes")
+    except ImportError:
+        return tuple(base_types)
+    com_error = getattr(pywintypes, "com_error", None)
+    if isinstance(com_error, type) and issubclass(com_error, BaseException):
+        base_types.append(com_error)
+    return tuple(base_types)
 
 
 def insert_text(hwp, text):
@@ -57,15 +76,15 @@ def insert_table(hwp, header, rows):
     for key, value in (('WidthValue', sum(col_widths)), ('HeightValue', sum(row_heights))):
         try:
             pset.SetItem(key, value)
-        except Exception:
-            pass
+        except hwp_runtime_exception_types() as exc:
+            print(f'[경고] 표 크기 설정 실패({key}): {exc}', file=sys.stderr)
     act.Execute(pset)
     moved_right = 0
     try:
         for ci, w in enumerate(col_widths):
             sel_act = hwp.CreateAction('TableColWidth')
             if sel_act is None:
-                raise RuntimeError('TableColWidth action unavailable')
+                raise HwpActionUnavailableError('TableColWidth action unavailable')
             sel_pset = sel_act.CreateSet()
             sel_act.GetDefault(sel_pset)
             sel_pset.SetItem('Width', w)
@@ -73,8 +92,8 @@ def insert_table(hwp, header, rows):
             if ci < num_cols - 1:
                 hwp.HAction.Run('TableRightCell')
                 moved_right += 1
-    except Exception as e:
-        print(f'[경고] 열 너비 조정 실패: {e}')
+    except hwp_runtime_exception_types() as e:
+        print(f'[경고] 열 너비 조정 실패: {e}', file=sys.stderr)
     finally:
         for _ in range(moved_right):
             hwp.HAction.Run('TableLeftCell')

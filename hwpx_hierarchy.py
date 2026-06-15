@@ -1,7 +1,16 @@
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from document_hierarchy import hwpx_para_metrics, hwpx_para_pr_id, parse_hierarchy_item
+
+
+@dataclass(frozen=True, slots=True)
+class MissingHeaderParaPropertiesError(RuntimeError):
+    header_path: Path
+
+    def __str__(self) -> str:
+        return "header.xml에서 hh:paraProperties를 찾지 못함"
 
 
 def _para_pr_xml(para_pr_id: str, left: int, intent: int) -> str:
@@ -34,7 +43,7 @@ def write_header_with_hierarchy(src_header: Path, dst_header: Path) -> None:
         return
     para_props = re.search(r'<hh:paraProperties itemCnt="(\d+)">', text)
     if para_props is None:
-        raise RuntimeError('header.xml에서 hh:paraProperties를 찾지 못함')
+        raise MissingHeaderParaPropertiesError(header_path=src_header)
     item_count = int(para_props.group(1))
     additions = []
     for depth in range(9):

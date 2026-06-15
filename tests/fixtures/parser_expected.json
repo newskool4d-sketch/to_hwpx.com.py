@@ -1,0 +1,42 @@
+{
+  "markdown": [
+    {"type": "h", "level": 1, "text": "제목"},
+    {"type": "official_header", "key": "수신", "value": "홍길동"},
+    {"type": "table", "header": ["구분", "내용"], "rows": [["A", "첫째"], ["B", "둘째"]]},
+    {"type": "li", "depth": 1, "text": "1. 항목", "marker": "1.", "content": "항목"},
+    {"type": "code", "text": "print(\"hi\")"}
+  ],
+  "txt": [
+    {"type": "p", "text": "문단 하나"},
+    {"type": "li", "depth": 0, "text": "Ⅰ. 대항목", "marker": "Ⅰ.", "content": "대항목"},
+    {"type": "li", "depth": 1, "text": "1. 항목", "marker": "1.", "content": "항목"},
+    {"type": "li", "depth": 3, "text": "- 글머리", "marker": "-", "content": "글머리"}
+  ],
+  "html": [
+    {"type": "h", "level": 1, "text": "HTML 제목"},
+    {"type": "p", "text": "문단 강조"},
+    {"type": "bq", "text": "인용문"},
+    {"type": "code", "text": "code line"},
+    {"type": "code", "text": "second line"},
+    {"type": "table", "header": ["열1", "열2"], "rows": [["A", "B"]]},
+    {"type": "li", "text": "목록 하나", "depth": 0}
+  ],
+  "csv": [
+    {"type": "table", "header": ["구분", "내용"], "rows": [["A", "첫째"], ["B", "둘째"]]}
+  ],
+  "empty_csv": [],
+  "xlsx": [
+    {"type": "h", "level": 2, "text": "자료"},
+    {"type": "table", "header": ["구분", "내용"], "rows": [["A", "첫째"], ["B", "둘째"]]}
+  ],
+  "docx": [
+    {"type": "h", "level": 1, "text": "DOCX 제목"},
+    {"type": "official_header", "key": "수신", "value": "홍길동"},
+    {"type": "p", "text": "본문"},
+    {"type": "table", "header": ["구분", "내용"], "rows": [["A", "첫째"]]}
+  ],
+  "pdf": [
+    {"type": "p", "text": "PDF Title"},
+    {"type": "p", "text": "PDF body"}
+  ]
+}

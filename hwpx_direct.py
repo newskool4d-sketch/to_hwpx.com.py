@@ -1,27 +1,58 @@
 import argparse
 import importlib.util
+import os
 import re
 import subprocess
 import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from types import ModuleType
 
+from blocks import BlockValue
 from hwpx_hierarchy import make_hierarchy_para, write_header_with_hierarchy
 from table_settings import calc_col_widths, calc_row_heights
 from to_hwpx_com import detect_and_parse
 
 
-SKILL_DIR = Path(r'C:\Users\홍주형\.agents\skills\hwpx변환')
-SCRIPTS_DIR = SKILL_DIR / 'scripts'
+DEFAULT_SKILL_DIR = Path(r'C:\Users\홍주형\.agents\skills\hwpx변환')
 TABLE_BODY_WIDTH = 42520
 TABLE_MIN_RENDER_HEIGHT = 2200
 
-helper_spec = importlib.util.spec_from_file_location('hwpx_helpers', SCRIPTS_DIR / 'hwpx_helpers.py')
-if helper_spec is None or helper_spec.loader is None:
-    raise ImportError('hwpx_helpers.py를 찾을 수 없습니다.')
-hwpx_helpers = importlib.util.module_from_spec(helper_spec)
-helper_spec.loader.exec_module(hwpx_helpers)
+
+def _string_value(value: BlockValue | None, default: str = '') -> str:
+    return value if isinstance(value, str) else default
+
+
+def _int_value(value: BlockValue | None, default: int = 0) -> int:
+    return value if isinstance(value, int) else default
+
+
+def resolve_skill_dir(explicit_path=None):
+    if explicit_path:
+        return Path(explicit_path).expanduser().resolve()
+    env_path = os.environ.get('HWPX_SKILL_DIR')
+    if env_path:
+        return Path(env_path).expanduser().resolve()
+    return DEFAULT_SKILL_DIR
+
+
+def load_hwpx_helpers(skill_dir) -> ModuleType:
+    helper_path = Path(skill_dir) / 'scripts' / 'hwpx_helpers.py'
+    if not helper_path.is_file():
+        raise ImportError(
+            f'hwpx_helpers.py를 찾을 수 없습니다: {helper_path}. '
+            '--skill-dir 또는 HWPX_SKILL_DIR로 hwpx변환 스킬 경로를 지정하세요.'
+        )
+    helper_spec = importlib.util.spec_from_file_location('hwpx_helpers', helper_path)
+    if helper_spec is None or helper_spec.loader is None:
+        raise ImportError(
+            f'hwpx_helpers.py를 로드할 수 없습니다: {helper_path}. '
+            '--skill-dir 또는 HWPX_SKILL_DIR 설정을 확인하세요.'
+        )
+    helpers = importlib.util.module_from_spec(helper_spec)
+    helper_spec.loader.exec_module(helpers)
+    return helpers
 
 
 def _output_path(src_path, output=None):
@@ -61,8 +92,8 @@ def _normalize_rows(header, rows):
     return normalized, col_count
 
 
-def _make_table_cell(text, col_idx, row_idx, width, height, is_header):
-    cell_para_id = hwpx_helpers.next_id()
+def _make_table_cell(text, col_idx, row_idx, width, height, is_header, helpers):
+    cell_para_id = helpers.next_id()
     border_fill = '13' if is_header else '4'
     char_pr = '18' if is_header else '38'
     para_pr = '21' if is_header else '4'
@@ -75,7 +106,7 @@ def _make_table_cell(text, col_idx, row_idx, width, height, is_header):
         f'hasTextRef="0" hasNumRef="0">'
         f'<hp:p paraPrIDRef="{para_pr}" styleIDRef="0" pageBreak="0" columnBreak="0" '
         f'merged="0" id="{cell_para_id}">'
-        f'<hp:run charPrIDRef="{char_pr}"><hp:t>{hwpx_helpers.xml_escape(text)}</hp:t></hp:run>'
+        f'<hp:run charPrIDRef="{char_pr}"><hp:t>{helpers.xml_escape(text)}</hp:t></hp:run>'
         f'</hp:p></hp:subList>'
         f'<hp:cellAddr colAddr="{col_idx}" rowAddr="{row_idx}"/>'
         f'<hp:cellSpan colSpan="1" rowSpan="1"/>'
@@ -84,7 +115,9 @@ def _make_table_cell(text, col_idx, row_idx, width, height, is_header):
     )
 
 
-def make_table(header, rows):
+def make_table(header, rows, helpers=None):
+    if helpers is None:
+        helpers = load_hwpx_helpers(resolve_skill_dir())
     normalized, col_count = _normalize_rows(header or [], rows or [])
     if not normalized or col_count == 0:
         return ''
@@ -100,14 +133,14 @@ def make_table(header, rows):
         heights.extend([TABLE_MIN_RENDER_HEIGHT] * (len(normalized) - len(heights)))
     heights = [max(TABLE_MIN_RENDER_HEIGHT, height) for height in heights]
 
-    p_id = hwpx_helpers.next_id()
-    tbl_id = hwpx_helpers.next_id()
+    p_id = helpers.next_id()
+    tbl_id = helpers.next_id()
     table_rows = []
     for row_idx, row in enumerate(normalized):
         cells = []
         is_header = has_header and row_idx == 0
         for col_idx in range(col_count):
-            cells.append(_make_table_cell(row[col_idx], col_idx, row_idx, widths[col_idx], heights[row_idx], is_header))
+            cells.append(_make_table_cell(row[col_idx], col_idx, row_idx, widths[col_idx], heights[row_idx], is_header, helpers))
         table_rows.append(f'<hp:tr>{"".join(cells)}</hp:tr>')
 
     total_height = sum(heights)
@@ -128,71 +161,75 @@ def make_table(header, rows):
     )
 
 
-def build_section_xml(src_path, section_path):
+def build_section_xml(src_path, section_path, skill_dir=None):
+    resolved_skill_dir = resolve_skill_dir(skill_dir)
+    helpers = load_hwpx_helpers(resolved_skill_dir)
     blocks = detect_and_parse(src_path)
     title = _document_title(src_path, blocks)
-    hwpx_helpers.reset_id()
+    helpers.reset_id()
 
-    header_path = SKILL_DIR / 'templates' / 'government' / 'header.xml'
-    ref_hwpx = SKILL_DIR / 'assets' / 'government-reference.hwpx'
-    hwpx_helpers.validate_header_for_government(header_path)
-    secpr, colpr = hwpx_helpers.extract_secpr_and_colpr(ref_hwpx)
+    header_path = resolved_skill_dir / 'templates' / 'government' / 'header.xml'
+    ref_hwpx = resolved_skill_dir / 'assets' / 'government-reference.hwpx'
+    helpers.validate_header_for_government(header_path)
+    secpr, colpr = helpers.extract_secpr_and_colpr(ref_hwpx)
 
     parts = [
         '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>',
-        f'<hs:sec {hwpx_helpers.NS_DECL}>',
-        hwpx_helpers.make_first_para(secpr, colpr),
+        f'<hs:sec {helpers.NS_DECL}>',
+        helpers.make_first_para(secpr, colpr),
     ]
     today = datetime.now().strftime('%Y. %m. %d.')
-    parts.extend(hwpx_helpers.make_cover_page(title, subtitle='Markdown 변환 문서', date=today))
+    parts.extend(helpers.make_cover_page(title, subtitle='Markdown 변환 문서', date=today))
 
     section_count = 0
     for block in blocks:
         block_type = block.get('type')
         if block_type == 'h':
-            level = block.get('level', 1)
-            text = block.get('text', '')
+            level = _int_value(block.get('level'), 1)
+            text = _string_value(block.get('text'))
             if level == 1 and text == title:
                 continue
             if level == 2:
                 section_count += 1
                 number, section_title = _split_section_title(text, section_count)
-                parts.append(hwpx_helpers.make_section_bar(number, section_title))
-                parts.append(hwpx_helpers.make_empty_line())
+                parts.append(helpers.make_section_bar(number, section_title))
+                parts.append(helpers.make_empty_line())
             else:
-                parts.append(hwpx_helpers.make_text_para(text, charpr='18', parapr='4'))
+                parts.append(helpers.make_text_para(text, charpr='18', parapr='4'))
         elif block_type == 'table':
-            table_xml = make_table(block.get('header') or [], block.get('rows') or [])
+            table_xml = make_table(block.get('header') or [], block.get('rows') or [], helpers=helpers)
             if table_xml:
                 parts.append(table_xml)
-                parts.append(hwpx_helpers.make_empty_line())
+                parts.append(helpers.make_empty_line())
         elif block_type == 'li':
-            depth = int(block.get('depth', 0) or 0)
+            depth = _int_value(block.get('depth'), 0)
             parts.append(
                 make_hierarchy_para(
-                    hwpx_helpers,
-                    block.get('text', ''),
+                    helpers,
+                    _string_value(block.get('text')),
                     fallback_depth=depth,
-                    marker=block.get('marker'),
-                    content=block.get('content'),
+                    marker=_string_value(block.get('marker')) or None,
+                    content=_string_value(block.get('content')) or None,
                 )
             )
         elif block_type == 'bq':
-            parts.append(hwpx_helpers.make_body_para('※', block.get('text', '')))
+            parts.append(helpers.make_body_para('※', _string_value(block.get('text'))))
         elif block_type == 'hr':
-            parts.append(hwpx_helpers.make_empty_line())
+            parts.append(helpers.make_empty_line())
         elif block_type == 'official_header':
-            parts.append(hwpx_helpers.make_body_para(block.get('key', ''), block.get('value', '')))
+            parts.append(helpers.make_body_para(_string_value(block.get('key')), _string_value(block.get('value'))))
         else:
-            text = block.get('text', '')
+            text = _string_value(block.get('text'))
             if text:
-                parts.append(hwpx_helpers.make_text_para(text, charpr='38', parapr='4'))
+                parts.append(helpers.make_text_para(text, charpr='38', parapr='4'))
     parts.append('</hs:sec>')
     section_path.write_text('\n'.join(parts), encoding='utf-8')
     return title
 
 
-def convert_markdown(src_path, output=None):
+def convert_markdown(src_path, output=None, skill_dir=None):
+    resolved_skill_dir = resolve_skill_dir(skill_dir)
+    scripts_dir = resolved_skill_dir / 'scripts'
     src_path = Path(src_path).expanduser().resolve()
     if not src_path.is_file():
         raise FileNotFoundError(src_path)
@@ -202,12 +239,12 @@ def convert_markdown(src_path, output=None):
     with tempfile.TemporaryDirectory(prefix='md_hwpx_') as tmpdir:
         header_path = Path(tmpdir) / 'header.xml'
         section_path = Path(tmpdir) / 'section0.xml'
-        write_header_with_hierarchy(SKILL_DIR / 'templates' / 'government' / 'header.xml', header_path)
-        title = build_section_xml(src_path, section_path)
+        write_header_with_hierarchy(resolved_skill_dir / 'templates' / 'government' / 'header.xml', header_path)
+        title = build_section_xml(src_path, section_path, skill_dir=resolved_skill_dir)
         subprocess.run(
             [
                 sys.executable,
-                str(SCRIPTS_DIR / 'build_hwpx.py'),
+                str(scripts_dir / 'build_hwpx.py'),
                 '--header',
                 str(header_path),
                 '--section',
@@ -221,8 +258,8 @@ def convert_markdown(src_path, output=None):
             ],
             check=True,
         )
-        subprocess.run([sys.executable, str(SCRIPTS_DIR / 'fix_namespaces.py'), str(output_path)], check=True)
-        subprocess.run([sys.executable, str(SCRIPTS_DIR / 'validate.py'), str(output_path)], check=True)
+        subprocess.run([sys.executable, str(scripts_dir / 'fix_namespaces.py'), str(output_path)], check=True)
+        subprocess.run([sys.executable, str(scripts_dir / 'validate.py'), str(output_path)], check=True)
     return output_path
 
 
@@ -230,8 +267,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='Markdown 파일을 COM 없이 HWPX로 직접 변환')
     parser.add_argument('markdown_path', help='변환할 Markdown 파일')
     parser.add_argument('-o', '--output', default=None, help='출력 HWPX 경로')
+    parser.add_argument('--skill-dir', default=None, help='hwpx변환 스킬 경로 (기본: HWPX_SKILL_DIR 또는 내장 기본값)')
     args = parser.parse_args(argv)
-    output_path = convert_markdown(args.markdown_path, output=args.output)
+    output_path = convert_markdown(args.markdown_path, output=args.output, skill_dir=args.skill_dir)
     print(output_path)
     return 0
 
