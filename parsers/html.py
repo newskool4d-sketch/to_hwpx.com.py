@@ -5,6 +5,9 @@ import importlib
 from typing import Final, Literal, assert_never
 
 from blocks import BlockDict
+from table_grid import SourceCell
+from table_grid import block_rows_from_grid
+from table_grid import expand_spanned_rows
 
 from .common import clean_inline
 
@@ -91,13 +94,25 @@ def parse_html(text: str) -> list[BlockDict]:
                     depth = len(node.find_parents(["ul", "ol"])) - 1
                     blocks.append({"type": "li", "text": clean_inline(value), "depth": max(depth, 0)})
             case "table":
-                rows: list[list[str]] = []
+                source_rows: list[list[SourceCell]] = []
                 for table_row in node.find_all("tr"):
-                    cells = [cell.get_text(" ", strip=True) for cell in table_row.find_all(["th", "td"])]
+                    cells = [
+                        SourceCell(
+                            text=cell.get_text(" ", strip=True),
+                            row_span=int(cell.get("rowspan", 1) or 1),
+                            col_span=int(cell.get("colspan", 1) or 1),
+                        )
+                        for cell in table_row.find_all(["th", "td"])
+                    ]
                     if cells:
-                        rows.append(cells)
-                if rows:
-                    blocks.append({"type": "table", "header": rows[0], "rows": rows[1:]})
+                        source_rows.append(cells)
+                grid, merged_cells = expand_spanned_rows(source_rows)
+                header, rows = block_rows_from_grid(grid)
+                if header:
+                    block: BlockDict = {"type": "table", "header": header, "rows": rows, "table_source": "html"}
+                    if merged_cells:
+                        block["merged_cells"] = merged_cells
+                    blocks.append(block)
             case unreachable:
                 assert_never(unreachable)
     return blocks

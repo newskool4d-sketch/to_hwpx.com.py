@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Final, TypeAlias
 
 
-BlockValue: TypeAlias = str | int | list[str] | list[list[str]]
+BlockValue: TypeAlias = str | int | list[str] | list[int] | list[list[str]] | list[list[int]]
 BlockDict: TypeAlias = dict[str, BlockValue]
 
 SUPPORTED_BLOCK_TYPES: Final = frozenset(
@@ -63,13 +63,29 @@ class ListItemBlock:
 class TableBlock:
     header: list[str]
     rows: list[list[str]]
+    table_role: str | None = None
+    column_widths: list[int] | None = None
+    table_source: str | None = None
+    worksheet_title: str | None = None
+    merged_cells: list[list[int]] | None = None
 
     def to_dict(self) -> BlockDict:
-        return {
+        block: BlockDict = {
             "type": "table",
             "header": list(self.header),
             "rows": [list(row) for row in self.rows],
         }
+        if self.table_role is not None:
+            block["table_role"] = self.table_role
+        if self.column_widths is not None:
+            block["column_widths"] = list(self.column_widths)
+        if self.table_source is not None:
+            block["table_source"] = self.table_source
+        if self.worksheet_title is not None:
+            block["worksheet_title"] = self.worksheet_title
+        if self.merged_cells is not None:
+            block["merged_cells"] = [list(span) for span in self.merged_cells]
+        return block
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,8 +136,24 @@ def list_item(
     return ListItemBlock(text=text, depth=depth, marker=marker, content=content).to_dict()
 
 
-def table(header: list[str], rows: list[list[str]]) -> BlockDict:
-    return TableBlock(header=header, rows=rows).to_dict()
+def table(
+    header: list[str],
+    rows: list[list[str]],
+    table_role: str | None = None,
+    column_widths: list[int] | None = None,
+    table_source: str | None = None,
+    worksheet_title: str | None = None,
+    merged_cells: list[list[int]] | None = None,
+) -> BlockDict:
+    return TableBlock(
+        header=header,
+        rows=rows,
+        table_role=table_role,
+        column_widths=column_widths,
+        table_source=table_source,
+        worksheet_title=worksheet_title,
+        merged_cells=merged_cells,
+    ).to_dict()
 
 
 def blockquote(text: str) -> BlockDict:

@@ -5,6 +5,7 @@ import re
 from typing import Literal, assert_never
 
 from blocks import BlockDict
+from table_grid import block_rows_from_grid
 
 
 DocxBlockTag = Literal["paragraph", "table"]
@@ -62,6 +63,65 @@ def list_depth(para) -> int:
         return 0
 
 
+def _docx_cell_text(tc, text_tag: str) -> str:
+    parts = [node.text for node in tc.iter() if node.tag == text_tag and node.text]
+    return "".join(parts).strip()
+
+
+def _docx_grid_span(tc) -> int:
+    grid_span = tc.tcPr.gridSpan if tc.tcPr is not None else None
+    if grid_span is None or grid_span.val is None:
+        return 1
+    return max(1, int(grid_span.val))
+
+
+def _docx_vmerge_value(tc) -> str:
+    vmerge = tc.tcPr.vMerge if tc.tcPr is not None else None
+    return "" if vmerge is None or vmerge.val is None else str(vmerge.val)
+
+
+def _docx_table_grid(table) -> tuple[list[list[str]], list[list[int]]]:
+    ns_module = importlib.import_module("docx.oxml.ns")
+    qn = getattr(ns_module, "qn")
+    text_tag = qn("w:t")
+    grid: list[list[str]] = []
+    merged_cells: list[list[int]] = []
+    active_vertical: dict[int, int] = {}
+    for row_index, table_row in enumerate(table._tbl.tr_lst):
+        row_values: list[str] = []
+        col_index = 0
+        for tc in table_row.tc_lst:
+            while len(row_values) <= col_index:
+                row_values.append("")
+            col_span = _docx_grid_span(tc)
+            vmerge = _docx_vmerge_value(tc)
+            if vmerge == "continue":
+                merge_index = active_vertical.get(col_index)
+                if merge_index is not None:
+                    merged_cells[merge_index][2] += 1
+                row_values[col_index] = ""
+            else:
+                for covered_col in range(col_index, col_index + col_span):
+                    active_vertical.pop(covered_col, None)
+                row_values[col_index] = _docx_cell_text(tc, text_tag)
+                if col_span > 1 or vmerge == "restart":
+                    merged_cells.append([row_index, col_index, 1, col_span])
+                    merge_index = len(merged_cells) - 1
+                    if vmerge == "restart":
+                        for covered_col in range(col_index, col_index + col_span):
+                            active_vertical[covered_col] = merge_index
+            for covered_col in range(col_index + 1, col_index + col_span):
+                while len(row_values) <= covered_col:
+                    row_values.append("")
+                row_values[covered_col] = ""
+            col_index += col_span
+        if any(row_values):
+            grid.append(row_values)
+    max_cols = max((len(row) for row in grid), default=0)
+    normalized = [row + [""] * (max_cols - len(row)) for row in grid]
+    return normalized, [span for span in merged_cells if span[2] > 1 or span[3] > 1]
+
+
 def parse_docx(docx_path: str) -> list[BlockDict]:
     docx_module = importlib.import_module("docx")
     table_module = importlib.import_module("docx.table")
@@ -75,11 +135,14 @@ def parse_docx(docx_path: str) -> list[BlockDict]:
         if isinstance(item, docx_table):
             if not item.rows:
                 continue
-            header = [cell.text.strip() for cell in item.rows[0].cells]
-            rows = [[cell.text.strip() for cell in row.cells] for row in item.rows[1:]]
+            grid, merged_cells = _docx_table_grid(item)
+            header, rows = block_rows_from_grid(grid)
             if all(not header_cell for header_cell in header) and not rows:
                 continue
-            blocks.append({"type": "table", "header": header, "rows": rows})
+            block: BlockDict = {"type": "table", "header": header, "rows": rows, "table_source": "docx"}
+            if merged_cells:
+                block["merged_cells"] = merged_cells
+            blocks.append(block)
             continue
 
         style_name = item.style.name if item.style else ""

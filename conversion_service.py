@@ -16,6 +16,7 @@ from parsers.html import MissingHtmlDependencyError
 from parsers.pdf_errors import PdfParseError
 from parsers.tabular import MissingXlsxDependencyError
 from table_hwpx_postprocess import apply_table_width_profiles
+from table_layout import table_layout_from_block
 
 
 class ConversionServiceError(RuntimeError):
@@ -80,6 +81,7 @@ INPUT_PARSE_FAILURE_TYPES: tuple[type[Exception], ...] = (
 )
 
 POSTPROCESS_FAILURE_TYPES: tuple[type[Exception], ...] = (OSError, RuntimeError, ValueError)
+HWPX_SAVE_OPTION = "lock:false"
 
 
 def temporary_hwpx_path(final_path: Path) -> Path:
@@ -106,7 +108,7 @@ def convert_file(
         raise FileExistsError(f"출력 파일이 이미 존재함: {out}")
     temp_out = temporary_hwpx_path(out)
     blocks = parse_source_blocks(src, kordoc_home)
-    table_headers = [blk.get("header") or [] for blk in blocks if blk.get("type") == "table"]
+    table_layouts = [table_layout_from_block(blk) for blk in blocks if blk.get("type") == "table"]
 
     hwp.XHwpDocuments.Add(isTab=False)
     time.sleep(0.5)
@@ -122,7 +124,7 @@ def convert_file(
         except UnsupportedBlockTypeError as exc:
             raise ConversionRenderError(src_path=src, original_error=exc) from exc
         try:
-            hwp.SaveAs(str(temp_out), "HWPX", "")
+            hwp.SaveAs(str(temp_out), "HWPX", HWPX_SAVE_OPTION)
         except startup_exception_types() as exc:
             raise HwpSaveAsError(src_path=src, output_path=temp_out, original_error=exc) from exc
         time.sleep(0.5)
@@ -134,7 +136,7 @@ def convert_file(
             print(f"[WARN] HWP 문서 닫기 실패: {exc}", file=sys.stderr)
         time.sleep(0.3)
         try:
-            apply_table_width_profiles(temp_out, table_headers)
+            apply_table_width_profiles(temp_out, table_layouts)
         except POSTPROCESS_FAILURE_TYPES as exc:
             raise HwpxPostprocessError(src_path=src, output_path=temp_out, original_error=exc) from exc
         try:

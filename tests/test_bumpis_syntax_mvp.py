@@ -20,10 +20,13 @@ def test_bumpis_syntax_fixture_parses_to_existing_block_types() -> None:
         {"type": "li", "depth": 2, "marker": "★", "content": "참고 사항", "text": "★ 참고 사항"},
         {"type": "bq", "text": "※ 일정은 변동될 수 있음"},
         {"type": "bq", "text": "※ 내부 검토용"},
-        {"type": "table", "header": ["구분", "내용"], "rows": [["A", "첫째"], ["B", "둘째"]]},
+        {"type": "table", "header": ["구분", "내용"], "rows": [["A", "첫째"], ["B", "둘째"]], "table_source": "bumpis"},
         {
             "type": "table",
             "header": ["시작", "종료", "분", "내용", "담당"],
+            "table_role": "schedule",
+            "column_widths": [14, 14, 9, 49, 14],
+            "table_source": "bumpis",
             "rows": [["15:00", "15:05", "5’", "인사 말씀", "국장"], ["15:05", "15:25", "20’", "보고", "과장"]],
         },
     ]

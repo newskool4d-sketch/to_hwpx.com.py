@@ -2,7 +2,8 @@ import importlib
 import sys
 
 from document_hierarchy import hwp_com_style, parse_hierarchy_item
-from table_settings import calc_col_widths, calc_row_heights
+from table_settings import calc_row_heights
+from table_layout import table_layout_for
 
 
 class HwpActionUnavailableError(RuntimeError):
@@ -57,13 +58,23 @@ def set_para_shape(hwp, align=0, space_before=0, space_after=0, indent_left=0, i
     act.Execute(pset)
 
 
-def insert_table(hwp, header, rows):
+def _clean_column_widths(column_widths):
+    if not isinstance(column_widths, list):
+        return None
+    if not all(type(value) is int for value in column_widths):
+        return None
+    return column_widths
+
+
+def insert_table(hwp, header, rows, table_role=None, column_widths=None):
     all_rows = ([header] if header else []) + rows
     if not all_rows:
         return
     num_rows = len(all_rows)
     num_cols = max(len(r) for r in all_rows)
-    col_widths = calc_col_widths(header or [], rows)
+    role = table_role if isinstance(table_role, str) else None
+    layout = table_layout_for(header or [], rows, role, _clean_column_widths(column_widths))
+    col_widths = layout.column_widths
     row_heights = calc_row_heights(header or [], rows, col_widths)
     act = hwp.CreateAction('TableCreate')
     pset = act.CreateSet()
@@ -106,10 +117,10 @@ def insert_table(hwp, header, rows):
             first_cell = False
             cell_text = row[ci] if ci < len(row) else ''
             if is_header:
-                set_para_shape(hwp, align=3)
+                set_para_shape(hwp, align=layout.style.header_align)
                 set_char_shape(hwp, height=1200, bold=True, font='table')
             else:
-                set_para_shape(hwp, align=1)
+                set_para_shape(hwp, align=layout.style.body_align)
                 set_char_shape(hwp, height=1200, font='table')
             if cell_text:
                 insert_text(hwp, cell_text)
@@ -171,7 +182,13 @@ def build_doc(hwp, blocks):
         elif t == 'table':
             set_para_shape(hwp, align=0)
             set_char_shape(hwp, height=1200, font='table')
-            insert_table(hwp, blk.get('header'), blk.get('rows', []))
+            insert_table(
+                hwp,
+                blk.get('header'),
+                blk.get('rows', []),
+                table_role=blk.get('table_role'),
+                column_widths=blk.get('column_widths'),
+            )
 
         elif t == 'official_header':
             set_para_shape(hwp, align=1)

@@ -53,6 +53,7 @@ class FakeAction:
 
     def Execute(self, parameter_set: FakeSet) -> None:
         self.hwp.executed_actions.append(self.name)
+        self.hwp.executed_parameters.append((self.name, dict(parameter_set.items)))
 
 
 class FakeHAction:
@@ -78,6 +79,7 @@ class FakeHwp:
         self.created_actions: list[str] = []
         self.action_defaults: list[str] = []
         self.executed_actions: list[str] = []
+        self.executed_parameters: list[tuple[str, dict[str, HwpParameterValue]]] = []
         self.run_commands: list[str] = []
         self.inserted_texts: list[str] = []
 
@@ -199,3 +201,23 @@ def test_insert_table_warns_when_optional_size_fields_are_rejected(capsys) -> No
     assert "HeightValue" in captured.err
     assert "TableCreate" in hwp.executed_actions
     assert "열1" in hwp.inserted_texts
+
+
+def test_insert_table_applies_mvp_width_and_alignment_metadata() -> None:
+    hwp = FakeHwp()
+
+    hwp_writer.insert_table(
+        hwp,
+        ["시작", "종료", "분", "내용", "담당"],
+        [["10:00", "10:05", "5", "인사", "담당자"]],
+        table_role="schedule",
+        column_widths=[14, 14, 9, 49, 14],
+    )
+
+    width_sets = [items for name, items in hwp.executed_parameters if name == "TableColWidth"]
+    assert [items["Width"] for items in width_sets] == [1960, 1960, 1260, 6860, 1960]
+    assert "CellBorderFill" not in hwp.created_actions
+
+    para_sets = [items for name, items in hwp.executed_parameters if name == "ParagraphShape"]
+    assert para_sets[0]["Align"] == 3
+    assert para_sets[5]["Align"] == 1

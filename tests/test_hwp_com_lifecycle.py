@@ -76,7 +76,7 @@ def test_convert_file_closes_document_after_success(tmp_path: Path) -> None:
 
     assert hwp.events[0] == "Add:False"
     assert hwp.events[1].startswith("SaveAs:.sample.")
-    assert hwp.events[1].endswith(".tmp.hwpx:HWPX:")
+    assert hwp.events[1].endswith(".tmp.hwpx:HWPX:lock:false")
     assert hwp.events[2] == "Close:False"
     assert output.read_text(encoding="utf-8") == "saved"
 
@@ -103,7 +103,7 @@ def test_convert_file_closes_document_after_save_failure(tmp_path: Path) -> None
     assert "forced SaveAs failure" in str(error)
     assert hwp.events[0] == "Add:False"
     assert hwp.events[1].startswith("SaveAs:.sample.")
-    assert hwp.events[1].endswith(".tmp.hwpx:HWPX:")
+    assert hwp.events[1].endswith(".tmp.hwpx:HWPX:lock:false")
     assert hwp.events[2] == "Close:False"
 
 

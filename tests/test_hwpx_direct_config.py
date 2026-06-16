@@ -125,3 +125,28 @@ def test_build_section_xml_uses_configured_helper_and_renders_table_and_list(tmp
     assert "첫째" in xml
     assert "○ " in xml
     assert "목록" in xml
+
+
+def test_build_section_xml_renders_merged_table_span_metadata(tmp_path: Path) -> None:
+    # Given
+    skill_dir = tmp_path / "skill"
+    _write_fake_helper(skill_dir)
+    source = tmp_path / "sample.md"
+    section_path = tmp_path / "section0.xml"
+    source.write_text("# 제목\n", encoding="utf-8")
+    blocks = [
+        {
+            "type": "table",
+            "header": ["항목", "", "예산액"],
+            "rows": [["강사료", "산출내역", "400,000원"]],
+            "merged_cells": [[0, 0, 1, 2]],
+        }
+    ]
+
+    # When
+    with patch.object(hwpx_direct, "detect_and_parse", return_value=blocks):
+        hwpx_direct.build_section_xml(source, section_path, skill_dir=skill_dir)
+
+    # Then
+    xml = section_path.read_text(encoding="utf-8")
+    assert '<hp:cellSpan colSpan="2" rowSpan="1"/>' in xml

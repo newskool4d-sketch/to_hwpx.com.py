@@ -11,13 +11,11 @@ from types import ModuleType
 
 from blocks import BlockValue
 from hwpx_hierarchy import make_hierarchy_para, write_header_with_hierarchy
-from table_settings import calc_col_widths, calc_row_heights
+from hwpx_table_direct import make_table_xml
 from to_hwpx_com import detect_and_parse
 
 
 DEFAULT_SKILL_DIR = Path(r'C:\Users\홍주형\.agents\skills\hwpx변환')
-TABLE_BODY_WIDTH = 42520
-TABLE_MIN_RENDER_HEIGHT = 2200
 
 
 def _string_value(value: BlockValue | None, default: str = '') -> str:
@@ -82,83 +80,10 @@ def _split_section_title(text, fallback_number):
     return str(fallback_number), text or ''
 
 
-def _normalize_rows(header, rows):
-    all_rows = ([header] if header else []) + (rows or [])
-    col_count = max((len(row) for row in all_rows), default=0)
-    normalized = []
-    for row in all_rows:
-        values = [str(cell or '').strip() for cell in row]
-        normalized.append(values + [''] * (col_count - len(values)))
-    return normalized, col_count
-
-
-def _make_table_cell(text, col_idx, row_idx, width, height, is_header, helpers):
-    cell_para_id = helpers.next_id()
-    border_fill = '13' if is_header else '4'
-    char_pr = '18' if is_header else '38'
-    para_pr = '21' if is_header else '4'
-    header_flag = '1' if is_header else '0'
-    return (
-        f'<hp:tc name="" header="{header_flag}" hasMargin="0" protect="0" editable="0" '
-        f'dirty="1" borderFillIDRef="{border_fill}">'
-        f'<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" '
-        f'linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" '
-        f'hasTextRef="0" hasNumRef="0">'
-        f'<hp:p paraPrIDRef="{para_pr}" styleIDRef="0" pageBreak="0" columnBreak="0" '
-        f'merged="0" id="{cell_para_id}">'
-        f'<hp:run charPrIDRef="{char_pr}"><hp:t>{helpers.xml_escape(text)}</hp:t></hp:run>'
-        f'</hp:p></hp:subList>'
-        f'<hp:cellAddr colAddr="{col_idx}" rowAddr="{row_idx}"/>'
-        f'<hp:cellSpan colSpan="1" rowSpan="1"/>'
-        f'<hp:cellSz width="{width}" height="{height}"/>'
-        f'<hp:cellMargin left="170" right="170" top="120" bottom="120"/></hp:tc>'
-    )
-
-
-def make_table(header, rows, helpers=None):
+def make_table(header, rows, helpers=None, table_role=None, column_widths=None, merged_cells=None):
     if helpers is None:
         helpers = load_hwpx_helpers(resolve_skill_dir())
-    normalized, col_count = _normalize_rows(header or [], rows or [])
-    if not normalized or col_count == 0:
-        return ''
-    has_header = bool(header)
-    widths = calc_col_widths(header or [], rows or [], total=TABLE_BODY_WIDTH)
-    if len(widths) < col_count:
-        widths.extend([TABLE_BODY_WIDTH // col_count] * (col_count - len(widths)))
-    width_diff = TABLE_BODY_WIDTH - sum(widths[:col_count])
-    widths[col_count - 1] += width_diff
-
-    heights = calc_row_heights(header or [], rows or [], widths[:col_count])
-    if len(heights) < len(normalized):
-        heights.extend([TABLE_MIN_RENDER_HEIGHT] * (len(normalized) - len(heights)))
-    heights = [max(TABLE_MIN_RENDER_HEIGHT, height) for height in heights]
-
-    p_id = helpers.next_id()
-    tbl_id = helpers.next_id()
-    table_rows = []
-    for row_idx, row in enumerate(normalized):
-        cells = []
-        is_header = has_header and row_idx == 0
-        for col_idx in range(col_count):
-            cells.append(_make_table_cell(row[col_idx], col_idx, row_idx, widths[col_idx], heights[row_idx], is_header, helpers))
-        table_rows.append(f'<hp:tr>{"".join(cells)}</hp:tr>')
-
-    total_height = sum(heights)
-    return (
-        f'<hp:p id="{p_id}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">'
-        f'<hp:run charPrIDRef="0">'
-        f'<hp:tbl id="{tbl_id}" zOrder="0" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" '
-        f'textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="CELL" repeatHeader="0" '
-        f'rowCnt="{len(normalized)}" colCnt="{col_count}" cellSpacing="0" borderFillIDRef="4" noAdjust="0">'
-        f'<hp:sz width="{TABLE_BODY_WIDTH}" widthRelTo="ABSOLUTE" height="{total_height}" '
-        f'heightRelTo="ABSOLUTE" protect="0"/>'
-        f'<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" '
-        f'holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" '
-        f'horzAlign="LEFT" vertOffset="0" horzOffset="0"/>'
-        f'<hp:outMargin left="0" right="0" top="0" bottom="0"/>'
-        f'<hp:inMargin left="0" right="0" top="0" bottom="0"/>'
-        f'{"".join(table_rows)}</hp:tbl></hp:run></hp:p>'
-    )
+    return make_table_xml(header, rows, helpers, table_role, column_widths, merged_cells)
 
 
 def build_section_xml(src_path, section_path, skill_dir=None):
@@ -197,7 +122,14 @@ def build_section_xml(src_path, section_path, skill_dir=None):
             else:
                 parts.append(helpers.make_text_para(text, charpr='18', parapr='4'))
         elif block_type == 'table':
-            table_xml = make_table(block.get('header') or [], block.get('rows') or [], helpers=helpers)
+            table_xml = make_table(
+                block.get('header') or [],
+                block.get('rows') or [],
+                helpers=helpers,
+                table_role=block.get('table_role'),
+                column_widths=block.get('column_widths'),
+                merged_cells=block.get('merged_cells'),
+            )
             if table_xml:
                 parts.append(table_xml)
                 parts.append(helpers.make_empty_line())

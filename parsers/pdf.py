@@ -17,6 +17,8 @@ from .pdf_errors import OpendataloaderPdfOutputError
 from .pdf_errors import OpendataloaderPdfUnavailableError
 from .pdf_errors import PdfTextExtractionError
 from .pdf_errors import PdfTextFallbackError
+from .pdf_table import odl_data_to_blocks
+from .pdf_table import odl_element_to_blocks
 from .text import parse_plain_text
 
 _PDF_EXTRACTOR_ERRORS = (
@@ -59,67 +61,6 @@ def kordoc_commands(kordoc_dir: Path, path: str | Path) -> list[list[str]]:
         ["python", str(kordoc_dir / "main.py"), str(path)],
         ["python", "-m", "kordoc", str(path)],
     ]
-
-
-def odl_cell_text(cell) -> str:
-    parts: list[str] = []
-    for kid in cell.get("kids", []):
-        ktype = kid.get("type", "")
-        if ktype in ("paragraph", "heading", "caption"):
-            text = kid.get("content", "").strip()
-            if text:
-                parts.append(text)
-        elif ktype == "text block":
-            for grandkid in kid.get("kids", []):
-                text = grandkid.get("content", "").strip()
-                if text:
-                    parts.append(text)
-        elif ktype == "list":
-            for item in kid.get("list items", []):
-                text = item.get("content", "").strip()
-                if text:
-                    parts.append(text)
-    return " ".join(parts)
-
-
-def odl_element_to_blocks(element) -> list[BlockDict]:
-    blocks: list[BlockDict] = []
-    etype = element.get("type", "")
-    if etype == "heading":
-        level = min(max(int(element.get("heading level", 1)), 1), 3)
-        content = element.get("content", "").strip()
-        if content:
-            blocks.append({"type": "h", "level": level, "text": content})
-    elif etype in ("paragraph", "caption"):
-        content = element.get("content", "").strip()
-        if content:
-            blocks.append({"type": "p", "text": content})
-    elif etype == "table":
-        grid: list[list[str]] = []
-        for row in element.get("rows", []):
-            row_texts = [odl_cell_text(cell) for cell in row.get("cells", [])]
-            if any(row_texts):
-                grid.append(row_texts)
-        if grid:
-            blocks.append({"type": "table", "header": grid[0], "rows": grid[1:]})
-    elif etype == "list":
-        for item in element.get("list items", []):
-            content = item.get("content", "").strip()
-            if content:
-                blocks.append({"type": "li", "text": content, "depth": 0})
-            for child in item.get("kids", []):
-                blocks.extend(odl_element_to_blocks(child))
-    elif etype == "text block":
-        for child in element.get("kids", []):
-            blocks.extend(odl_element_to_blocks(child))
-    return blocks
-
-
-def odl_data_to_blocks(data) -> list[BlockDict]:
-    blocks: list[BlockDict] = []
-    for element in data.get("kids", []):
-        blocks.extend(odl_element_to_blocks(element))
-    return blocks
 
 
 def extract_pdf_blocks_odl(path: str | Path) -> list[BlockDict]:

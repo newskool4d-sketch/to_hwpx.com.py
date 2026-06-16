@@ -9,6 +9,8 @@ from markdown_table_parser import (
     normalize_parsed_table,
     parse_markdown_table_row,
 )
+from table_layout import SCHEDULE_COLUMN_WIDTHS
+from table_layout import TABLE_ROLE_SCHEDULE
 
 from .common import clean_inline, detect_list_item
 
@@ -62,7 +64,7 @@ def _consume_prefixed_table(lines: list[str], start: int, prefix: str) -> tuple[
         i += 1
     if not rows:
         return None
-    return {"type": "table", "header": rows[0], "rows": rows[1:]}, i
+    return {"type": "table", "header": rows[0], "rows": rows[1:], "table_source": "bumpis"}, i
 
 
 def _consume_schedule_table(lines: list[str], start: int) -> tuple[BlockDict, int] | None:
@@ -76,7 +78,14 @@ def _consume_schedule_table(lines: list[str], start: int) -> tuple[BlockDict, in
         i += 1
     if not rows:
         return None
-    return {"type": "table", "header": ["시작", "종료", "분", "내용", "담당"], "rows": rows}, i
+    return {
+        "type": "table",
+        "header": ["시작", "종료", "분", "내용", "담당"],
+        "table_role": TABLE_ROLE_SCHEDULE,
+        "column_widths": list(SCHEDULE_COLUMN_WIDTHS),
+        "table_source": "bumpis",
+        "rows": rows,
+    }, i
 
 
 def _parse_bumpis_block(line: str) -> BlockDict | None:
@@ -194,7 +203,7 @@ def parse_markdown(text: str) -> list[BlockDict]:
                 rows.append(parse_markdown_table_row(lines[i], clean_inline))
                 i += 1
             header, rows = normalize_parsed_table(header, rows)
-            blocks.append({"type": "table", "header": header, "rows": rows})
+            blocks.append({"type": "table", "header": header, "rows": rows, "table_source": "markdown"})
             continue
 
         item = detect_list_item(line)

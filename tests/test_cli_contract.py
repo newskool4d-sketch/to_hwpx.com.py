@@ -14,8 +14,11 @@ PROJECT_PYTHON_FILES = [
     "hwp_writer.py",
     "hwpx_direct.py",
     "hwpx_hierarchy.py",
+    "hwpx_table_direct.py",
     "markdown_table_parser.py",
+    "table_grid.py",
     "table_hwpx_postprocess.py",
+    "table_layout.py",
     "table_settings.py",
     "to_hwpx_com.py",
 ]

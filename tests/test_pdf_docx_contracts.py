@@ -38,8 +38,66 @@ def test_docx_parser_preserves_paragraph_and_table_source_order(tmp_path: Path) 
     assert blocks == [
         {"type": "h", "level": 1, "text": "첫 제목"},
         {"type": "p", "text": "첫 문단"},
-        {"type": "table", "header": ["구분", "내용"], "rows": [["A", "첫째"]]},
+        {"type": "table", "header": ["구분", "내용"], "rows": [["A", "첫째"]], "table_source": "docx"},
         {"type": "p", "text": "마지막 문단"},
+    ]
+
+
+def test_docx_parser_preserves_table_source_and_merged_cells(tmp_path: Path) -> None:
+    # Given
+    docx = _require_module("docx", "python-docx")
+    document = getattr(docx, "Document")()
+    table = document.add_table(rows=2, cols=3)
+    merged_cell = table.cell(0, 0).merge(table.cell(0, 1))
+    merged_cell.text = "항목"
+    table.cell(0, 2).text = "예산액"
+    table.cell(1, 0).text = "강사료"
+    table.cell(1, 1).text = "산출내역"
+    table.cell(1, 2).text = "400,000원"
+    path = tmp_path / "merged.docx"
+    document.save(path)
+
+    # When
+    blocks = docx_parser.parse_docx(str(path))
+
+    # Then
+    assert blocks == [
+        {
+            "type": "table",
+            "header": ["항목", "", "예산액"],
+            "rows": [["강사료", "산출내역", "400,000원"]],
+            "table_source": "docx",
+            "merged_cells": [[0, 0, 1, 2]],
+        }
+    ]
+
+
+def test_docx_parser_preserves_vertical_merged_cells(tmp_path: Path) -> None:
+    # Given
+    docx = _require_module("docx", "python-docx")
+    document = getattr(docx, "Document")()
+    table = document.add_table(rows=3, cols=2)
+    merged_cell = table.cell(0, 0).merge(table.cell(1, 0))
+    merged_cell.text = "구분"
+    table.cell(0, 1).text = "내용"
+    table.cell(1, 1).text = "세부"
+    table.cell(2, 0).text = "A"
+    table.cell(2, 1).text = "본문"
+    path = tmp_path / "vertical-merged.docx"
+    document.save(path)
+
+    # When
+    blocks = docx_parser.parse_docx(str(path))
+
+    # Then
+    assert blocks == [
+        {
+            "type": "table",
+            "header": ["구분", "내용"],
+            "rows": [["", "세부"], ["A", "본문"]],
+            "table_source": "docx",
+            "merged_cells": [[0, 0, 2, 1]],
+        }
     ]
 
 
