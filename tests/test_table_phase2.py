@@ -55,6 +55,25 @@ def test_budget_preset_keeps_amount_column_compact_and_detail_column_wide() -> N
     assert layout.column_widths == [2400, 5000, 2600]
 
 
+def test_public_document_table_roles_are_inferred_from_headers() -> None:
+    # Given
+    cases = [
+        (["용어", "정의"], [["위탁", "사무를 외부 기관에 맡기는 방식"]], "definition", 1),
+        (["구분", "현행", "개선"], [["절차", "수기 접수", "온라인 접수"]], "comparison", 1),
+        (["기관", "담당자", "연락처"], [["교육청", "홍길동", "032-000-0000"]], "contacts", 0),
+        (["확인", "점검 항목", "비고"], [["□", "안전교육 실시", "완료"]], "checklist", 1),
+    ]
+
+    for header, rows, expected_role, wide_col in cases:
+        # When
+        layout = table_layout_from_block(blocks.table(header, rows), total_width=10000)
+
+        # Then
+        assert layout.table_role == expected_role
+        assert sum(layout.column_widths) == 10000
+        assert layout.column_widths[wide_col] == max(layout.column_widths)
+
+
 def test_html_parser_preserves_source_and_cell_spans() -> None:
     # Given
     _require_module("bs4", "beautifulsoup4")
