@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from blocks import BlockValue
+from hwpx_page import DEFAULT_TABLE_BODY_WIDTH
 from table_grid import int_rows_value
 from table_layout import table_layout_for
 from table_settings import calc_row_heights
 
 
-TABLE_BODY_WIDTH = 42520
+TABLE_BODY_WIDTH = DEFAULT_TABLE_BODY_WIDTH
 TABLE_MIN_RENDER_HEIGHT = 2200
 
 
@@ -88,16 +89,23 @@ def _make_table_cell(text, col_idx, row_idx, width, height, is_header, helpers, 
     )
 
 
-def make_table_xml(header, rows, helpers, table_role=None, column_widths=None, merged_cells=None):
+def _table_body_width(total_width) -> int:
+    if type(total_width) is int and total_width > 0:
+        return total_width
+    return TABLE_BODY_WIDTH
+
+
+def make_table_xml(header, rows, helpers, table_role=None, column_widths=None, merged_cells=None, total_width=None):
     normalized_header = string_list_value(header)
     normalized_rows = string_rows_value(rows)
+    table_width = _table_body_width(total_width)
     layout = table_layout_for(
         normalized_header or [],
         normalized_rows or [],
         table_role if isinstance(table_role, str) else None,
         int_list_value(column_widths),
         merged_cells=int_rows_value(merged_cells),
-        total_width=TABLE_BODY_WIDTH,
+        total_width=table_width,
     )
     normalized, col_count = _normalize_rows(layout.header, layout.rows)
     if not normalized or col_count == 0:
@@ -126,7 +134,7 @@ def make_table_xml(header, rows, helpers, table_role=None, column_widths=None, m
         f'<hp:tbl id="{tbl_id}" zOrder="0" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" '
         f'textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="CELL" repeatHeader="0" '
         f'rowCnt="{len(normalized)}" colCnt="{col_count}" cellSpacing="0" borderFillIDRef="4" noAdjust="0">'
-        f'<hp:sz width="{TABLE_BODY_WIDTH}" widthRelTo="ABSOLUTE" height="{total_height}" '
+        f'<hp:sz width="{table_width}" widthRelTo="ABSOLUTE" height="{total_height}" '
         f'heightRelTo="ABSOLUTE" protect="0"/>'
         f'<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" '
         f'holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" '

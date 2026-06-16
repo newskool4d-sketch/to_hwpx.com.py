@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,7 +17,6 @@ from parsers.html import MissingHtmlDependencyError
 from parsers.pdf_errors import PdfParseError
 from parsers.tabular import MissingXlsxDependencyError
 from table_hwpx_postprocess import apply_table_width_profiles
-from table_layout import table_layout_from_block
 
 
 class ConversionServiceError(RuntimeError):
@@ -82,6 +82,7 @@ INPUT_PARSE_FAILURE_TYPES: tuple[type[Exception], ...] = (
 
 POSTPROCESS_FAILURE_TYPES: tuple[type[Exception], ...] = (OSError, RuntimeError, ValueError)
 HWPX_SAVE_OPTION = "lock:false"
+StageReporter = Callable[[str], None]
 
 
 def temporary_hwpx_path(final_path: Path) -> Path:
@@ -95,21 +96,29 @@ def parse_source_blocks(src: Path, kordoc_home: str | Path | None) -> list[Block
         raise ConversionInputError(src_path=src, original_error=exc) from exc
 
 
+def _report_stage(stage_reporter: StageReporter | None, src: Path, stage: str) -> None:
+    if stage_reporter is not None:
+        stage_reporter(f"{src.name}: {stage}")
+
+
 def convert_file(
     hwp,
     src_path: str | Path,
     hwpx_path: str | Path,
     insert_end_mark: bool = False,
     kordoc_home: str | Path | None = None,
+    stage_reporter: StageReporter | None = None,
 ) -> None:
     src = Path(src_path)
     out = Path(hwpx_path)
     if out.exists():
         raise FileExistsError(f"출력 파일이 이미 존재함: {out}")
     temp_out = temporary_hwpx_path(out)
+    _report_stage(stage_reporter, src, "parse_source")
     blocks = parse_source_blocks(src, kordoc_home)
-    table_layouts = [table_layout_from_block(blk) for blk in blocks if blk.get("type") == "table"]
+    table_blocks = [blk for blk in blocks if blk.get("type") == "table"]
 
+    _report_stage(stage_reporter, src, "XHwpDocuments.Add")
     hwp.XHwpDocuments.Add(isTab=False)
     time.sleep(0.5)
     doc = hwp.XHwpDocuments.Item(hwp.XHwpDocuments.Count - 1)
@@ -118,17 +127,20 @@ def convert_file(
 
     try:
         try:
+            _report_stage(stage_reporter, src, "build_doc")
             build_doc(hwp, blocks)
             if insert_end_mark:
                 _insert_end_mark(hwp, blocks)
         except UnsupportedBlockTypeError as exc:
             raise ConversionRenderError(src_path=src, original_error=exc) from exc
         try:
+            _report_stage(stage_reporter, src, "SaveAs")
             hwp.SaveAs(str(temp_out), "HWPX", HWPX_SAVE_OPTION)
         except startup_exception_types() as exc:
             raise HwpSaveAsError(src_path=src, output_path=temp_out, original_error=exc) from exc
         time.sleep(0.5)
         try:
+            _report_stage(stage_reporter, src, "doc.Close")
             doc.Close(isDirty=False)
             document_closed = True
         except startup_exception_types() as exc:
@@ -136,10 +148,12 @@ def convert_file(
             print(f"[WARN] HWP 문서 닫기 실패: {exc}", file=sys.stderr)
         time.sleep(0.3)
         try:
-            apply_table_width_profiles(temp_out, table_layouts)
+            _report_stage(stage_reporter, src, "postprocess")
+            apply_table_width_profiles(temp_out, table_blocks)
         except POSTPROCESS_FAILURE_TYPES as exc:
             raise HwpxPostprocessError(src_path=src, output_path=temp_out, original_error=exc) from exc
         try:
+            _report_stage(stage_reporter, src, "finalize")
             temp_out.replace(out)
         except OSError as exc:
             raise HwpxFinalizeError(src_path=src, output_path=out, original_error=exc) from exc
@@ -147,6 +161,7 @@ def convert_file(
     finally:
         if not document_closed:
             try:
+                _report_stage(stage_reporter, src, "doc.Close.finally")
                 doc.Close(isDirty=False)
             except startup_exception_types() as exc:
                 print(f"[WARN] HWP 문서 닫기 실패: {exc}", file=sys.stderr)

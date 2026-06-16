@@ -126,6 +126,10 @@ def print_failures(failures: list[tuple[str, Exception]]) -> None:
         print(f'- {src_arg}: {exc}', file=sys.stderr)
 
 
+def print_conversion_stage(stage: str) -> None:
+    print(f'[HWP-CONVERT] {stage}', file=sys.stderr, flush=True)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description='Markdown / TXT / DOCX / HTML / CSV / XLSX / PDF → HWPX 변환 (HWP COM 방식)',
@@ -138,6 +142,7 @@ def main(argv=None):
     parser.add_argument('--preflight', action='store_true', help='HWP COM 실행 가능 여부만 점검하고 종료')
     parser.add_argument('--startup-timeout', type=positive_int, default=45, help='HWP COM 시작 제한 시간(초), 기본 45초')
     parser.add_argument('--kordoc-home', default=None, help='스캔 PDF OCR용 kordoc-ai 경로 (또는 KORDOC_HOME 환경변수)')
+    parser.add_argument('--diagnose-stages', action='store_true', help='변환 단계별 로그를 stderr로 출력')
     parser.add_argument('--_preflight-worker', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--_preflight-visible', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -196,12 +201,17 @@ def main(argv=None):
         for src_arg, src_path, hwpx_path in planned_sources:
             try:
                 print(f'변환 중: {src_path.name} → {Path(hwpx_path).name}')
+                kwargs = {
+                    'insert_end_mark': args.insert_end_mark,
+                    'kordoc_home': args.kordoc_home,
+                }
+                if args.diagnose_stages:
+                    kwargs['stage_reporter'] = print_conversion_stage
                 convert_file(
                     hwp,
                     src_path,
                     str(hwpx_path),
-                    insert_end_mark=args.insert_end_mark,
-                    kordoc_home=args.kordoc_home,
+                    **kwargs,
                 )
             except CONVERSION_FAILURE_TYPES as exc:
                 failures.append((src_arg, exc))

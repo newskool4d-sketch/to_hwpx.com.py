@@ -221,3 +221,20 @@ def test_insert_table_applies_mvp_width_and_alignment_metadata() -> None:
     para_sets = [items for name, items in hwp.executed_parameters if name == "ParagraphShape"]
     assert para_sets[0]["Align"] == 3
     assert para_sets[5]["Align"] == 1
+
+
+def test_insert_table_accepts_explicit_total_width_for_renderer_page_width() -> None:
+    # Given
+    hwp = FakeHwp()
+
+    # When
+    hwp_writer.insert_table(
+        hwp,
+        ["용어", "정의"],
+        [["위탁", "외부 기관에 맡김"]],
+        total_width=24000,
+    )
+
+    # Then
+    width_sets = [items for name, items in hwp.executed_parameters if name == "TableColWidth"]
+    assert [items["Width"] for items in width_sets] == [7200, 16800]

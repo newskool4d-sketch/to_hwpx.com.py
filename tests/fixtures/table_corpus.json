@@ -1,0 +1,67 @@
+[
+  {
+    "name": "budget",
+    "header": ["항목", "산출내역", "예산액"],
+    "rows": [["강사료", "2명 x 2시간 x 100,000원", "400,000원"]],
+    "total_width": 10000,
+    "expected_role": "budget",
+    "expected_widths": [2400, 5000, 2600]
+  },
+  {
+    "name": "long_text",
+    "header": ["구분", "세부 내용", "담당"],
+    "rows": [["A", "학교 현장의 수요와 지역 여건을 반영한 긴 설명 문장입니다. 학교 현장의 수요와 지역 여건을 반영한 긴 설명 문장입니다.", "홍길동"]],
+    "total_width": 14000,
+    "expected_role": "basic",
+    "wide_column": 1
+  },
+  {
+    "name": "five_column_schedule",
+    "header": ["시작", "종료", "분", "내용", "담당"],
+    "rows": [["10:00", "10:10", "10", "등록 및 안내", "담당자"]],
+    "total_width": 10000,
+    "expected_role": "schedule",
+    "expected_widths": [1400, 1400, 900, 4900, 1400]
+  },
+  {
+    "name": "empty_definition",
+    "header": ["용어", "정의"],
+    "rows": [["위탁", ""], ["", "학교 업무 일부를 외부 기관에 맡기는 방식"]],
+    "total_width": 10000,
+    "expected_role": "definition",
+    "expected_widths": [3000, 7000]
+  },
+  {
+    "name": "comparison",
+    "header": ["구분", "현행", "개선"],
+    "rows": [["절차", "수기 접수", "온라인 접수"]],
+    "total_width": 12000,
+    "expected_role": "comparison",
+    "expected_widths": [2880, 4560, 4560]
+  },
+  {
+    "name": "contacts",
+    "header": ["기관", "담당자", "연락처"],
+    "rows": [["교육청", "홍길동", "032-000-0000"]],
+    "total_width": 9000,
+    "expected_role": "contacts",
+    "expected_widths": [3780, 2160, 3060]
+  },
+  {
+    "name": "checklist",
+    "header": ["확인", "점검 항목", "비고"],
+    "rows": [["□", "안전교육 실시", "완료"]],
+    "total_width": 10000,
+    "expected_role": "checklist",
+    "expected_widths": [1400, 6600, 2000]
+  },
+  {
+    "name": "merged_budget_header",
+    "header": ["항목", "", "예산액"],
+    "rows": [["강사료", "산출내역", "400,000원"]],
+    "merged_cells": [[0, 0, 1, 2]],
+    "total_width": 9000,
+    "expected_role": "budget",
+    "expected_widths": [2160, 4500, 2340]
+  }
+]

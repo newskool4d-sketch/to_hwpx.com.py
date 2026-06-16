@@ -150,3 +150,36 @@ def test_build_section_xml_renders_merged_table_span_metadata(tmp_path: Path) ->
     # Then
     xml = section_path.read_text(encoding="utf-8")
     assert '<hp:cellSpan colSpan="2" rowSpan="1"/>' in xml
+
+
+def test_build_section_xml_uses_section_content_width_for_tables(tmp_path: Path) -> None:
+    # Given
+    skill_dir = tmp_path / "skill"
+    _write_fake_helper(skill_dir)
+    helper_path = skill_dir / "scripts" / "hwpx_helpers.py"
+    helper_text = helper_path.read_text(encoding="utf-8")
+    helper_path.write_text(
+        helper_text.replace(
+            "    return '<secpr/>', '<colpr/>'",
+            (
+                "    return '<hp:secPr xmlns:hp=\"hp\"><hp:pagePr width=\"30000\" height=\"40000\">"
+                '<hp:margin left="3000" right="2000" top="0" bottom="0" header="0" footer="0" gutter="1000"/>'
+                "</hp:pagePr></hp:secPr>', '<colpr/>'"
+            ),
+        ),
+        encoding="utf-8",
+    )
+    source = tmp_path / "sample.md"
+    section_path = tmp_path / "section0.xml"
+    source.write_text("# 제목\n", encoding="utf-8")
+    blocks = [{"type": "table", "header": ["용어", "정의"], "rows": [["위탁", "외부 기관에 맡김"]]}]
+
+    # When
+    with patch.object(hwpx_direct, "detect_and_parse", return_value=blocks):
+        hwpx_direct.build_section_xml(source, section_path, skill_dir=skill_dir)
+
+    # Then
+    xml = section_path.read_text(encoding="utf-8")
+    assert '<hp:sz width="24000"' in xml
+    assert '<hp:cellSz width="7200"' in xml
+    assert '<hp:cellSz width="16800"' in xml

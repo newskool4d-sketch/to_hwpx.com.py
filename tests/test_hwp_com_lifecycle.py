@@ -69,7 +69,7 @@ def test_convert_file_closes_document_after_success(tmp_path: Path) -> None:
     with (
         patch.object(conversion_service, "detect_and_parse", return_value=[{"type": "p", "text": "본문"}]),
         patch.object(conversion_service, "build_doc", return_value=None),
-        patch.object(conversion_service, "apply_table_width_profiles", return_value=None),
+        patch.object(conversion_service, "apply_table_width_profiles", return_value=None) as postprocess,
         patch.object(conversion_service.time, "sleep", return_value=None),
     ):
         conversion_service.convert_file(hwp, source, output)
@@ -79,6 +79,58 @@ def test_convert_file_closes_document_after_success(tmp_path: Path) -> None:
     assert hwp.events[1].endswith(".tmp.hwpx:HWPX:lock:false")
     assert hwp.events[2] == "Close:False"
     assert output.read_text(encoding="utf-8") == "saved"
+    postprocess.assert_called_once()
+
+
+def test_convert_file_passes_table_blocks_to_postprocess_for_section_width_relayout(tmp_path: Path) -> None:
+    # Given
+    source = tmp_path / "sample.md"
+    output = tmp_path / "sample.hwpx"
+    source.write_text("# 제목\n", encoding="utf-8")
+    hwp = FakeHwp()
+    table_block = {"type": "table", "header": ["용어", "정의"], "rows": [["위탁", "외부 기관에 맡김"]]}
+
+    # When
+    with (
+        patch.object(conversion_service, "detect_and_parse", return_value=[table_block]),
+        patch.object(conversion_service, "build_doc", return_value=None),
+        patch.object(conversion_service, "apply_table_width_profiles", return_value=None) as postprocess,
+        patch.object(conversion_service.time, "sleep", return_value=None),
+    ):
+        conversion_service.convert_file(hwp, source, output)
+
+    # Then
+    postprocess.assert_called_once()
+    assert postprocess.call_args.args[1] == [table_block]
+
+
+def test_convert_file_reports_conversion_stages(tmp_path: Path) -> None:
+    # Given
+    source = tmp_path / "sample.md"
+    output = tmp_path / "sample.hwpx"
+    source.write_text("# 제목\n", encoding="utf-8")
+    hwp = FakeHwp()
+    stages: list[str] = []
+
+    # When
+    with (
+        patch.object(conversion_service, "detect_and_parse", return_value=[{"type": "p", "text": "본문"}]),
+        patch.object(conversion_service, "build_doc", return_value=None),
+        patch.object(conversion_service, "apply_table_width_profiles", return_value=None),
+        patch.object(conversion_service.time, "sleep", return_value=None),
+    ):
+        conversion_service.convert_file(hwp, source, output, stage_reporter=stages.append)
+
+    # Then
+    assert stages == [
+        "sample.md: parse_source",
+        "sample.md: XHwpDocuments.Add",
+        "sample.md: build_doc",
+        "sample.md: SaveAs",
+        "sample.md: doc.Close",
+        "sample.md: postprocess",
+        "sample.md: finalize",
+    ]
 
 
 def test_convert_file_closes_document_after_save_failure(tmp_path: Path) -> None:

@@ -11,6 +11,7 @@ from types import ModuleType
 
 from blocks import BlockValue
 from hwpx_hierarchy import make_hierarchy_para, write_header_with_hierarchy
+from hwpx_page import content_width_from_secpr
 from hwpx_table_direct import make_table_xml
 from to_hwpx_com import detect_and_parse
 
@@ -80,10 +81,10 @@ def _split_section_title(text, fallback_number):
     return str(fallback_number), text or ''
 
 
-def make_table(header, rows, helpers=None, table_role=None, column_widths=None, merged_cells=None):
+def make_table(header, rows, helpers=None, table_role=None, column_widths=None, merged_cells=None, total_width=None):
     if helpers is None:
         helpers = load_hwpx_helpers(resolve_skill_dir())
-    return make_table_xml(header, rows, helpers, table_role, column_widths, merged_cells)
+    return make_table_xml(header, rows, helpers, table_role, column_widths, merged_cells, total_width)
 
 
 def build_section_xml(src_path, section_path, skill_dir=None):
@@ -97,6 +98,7 @@ def build_section_xml(src_path, section_path, skill_dir=None):
     ref_hwpx = resolved_skill_dir / 'assets' / 'government-reference.hwpx'
     helpers.validate_header_for_government(header_path)
     secpr, colpr = helpers.extract_secpr_and_colpr(ref_hwpx)
+    table_total_width = content_width_from_secpr(secpr)
 
     parts = [
         '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>',
@@ -129,6 +131,7 @@ def build_section_xml(src_path, section_path, skill_dir=None):
                 table_role=block.get('table_role'),
                 column_widths=block.get('column_widths'),
                 merged_cells=block.get('merged_cells'),
+                total_width=table_total_width,
             )
             if table_xml:
                 parts.append(table_xml)

@@ -26,12 +26,22 @@ ROLE_COLUMN_WIDTHS_BY_COUNT: Final = {
 
 SCHEDULE_HEADER: Final = ("시작", "종료", "분", "내용", "담당")
 BUDGET_HEADER_TERMS: Final = ("예산", "예산액", "금액", "단가", "수량", "합계", "원", "amount", "price", "total")
-SCHEDULE_HEADER_TERMS: Final = ("시작", "종료", "시간", "시각", "일시", "분", "내용", "담당")
+SCHEDULE_HEADER_TERMS: Final = ("시작", "종료", "시간", "시각", "일시", "분")
 DEFINITION_HEADER_TERMS: Final = ("용어", "정의", "개념", "의미", "뜻", "definition", "term", "meaning")
 COMPARISON_HEADER_TERMS: Final = ("현행", "개선", "변경", "전", "후", "비교", "as-is", "to-be", "before", "after")
 CONTACT_HEADER_TERMS: Final = ("기관", "부서", "소속", "담당자", "연락처", "전화", "이메일", "contact", "phone", "email")
 CHECKLIST_HEADER_TERMS: Final = ("확인", "점검", "체크", "항목", "완료", "여부", "check", "done", "status")
 DETAIL_HEADER_TERMS: Final = ("내용", "세부", "내역", "설명", "비고", "추진", "계획")
+
+
+def _has_schedule_header_term(header: tuple[str, ...]) -> bool:
+    for cell in header:
+        for term in SCHEDULE_HEADER_TERMS:
+            if len(term) == 1 and cell == term:
+                return True
+            if len(term) > 1 and term in cell:
+                return True
+    return False
 
 
 def role_column_widths(table_role: str, col_count: int) -> list[int]:
@@ -60,7 +70,7 @@ def infer_table_role(header: list[str], rows: list[list[str]]) -> str:
         return TABLE_ROLE_CONTACTS
     if sum(term in joined_header for term in CHECKLIST_HEADER_TERMS) >= 2:
         return TABLE_ROLE_CHECKLIST
-    if len(normalized_header) >= 3 and any(term in joined_header for term in SCHEDULE_HEADER_TERMS):
+    if len(normalized_header) >= 3 and _has_schedule_header_term(normalized_header):
         return TABLE_ROLE_SCHEDULE
     if len(normalized_header) == 5 and rows and all(":" in row[0] for row in rows if row):
         return TABLE_ROLE_SCHEDULE

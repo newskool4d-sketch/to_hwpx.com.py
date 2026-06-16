@@ -9,6 +9,7 @@ from table_settings import TABLE_TOTAL_WIDTH, exact_header_widths
 from table_layout import TableLayout
 from table_layout import TableCellStyle
 from table_layout import table_layout_for
+from table_layout import table_layout_from_block
 from table_hwpx_styles import ensure_table_border_fills
 from table_hwpx_styles import register_hwpx_namespaces
 
@@ -52,23 +53,24 @@ def _scaled_widths(widths, total_width):
     return scaled
 
 
-def _layout_widths(layout, col_count, total_width):
+def _resolved_layout(layout, col_count, total_width):
     if isinstance(layout, TableLayout):
         if len(layout.column_widths) == col_count:
-            return _scaled_widths(layout.column_widths, total_width)
-        return []
+            return layout
+        return None
+    if isinstance(layout, dict):
+        resolved = table_layout_from_block(layout, total_width=total_width)
+        if len(resolved.column_widths) == col_count:
+            return resolved
+        return None
     if isinstance(layout, list):
         exact_widths = exact_header_widths(layout, col_count, total_width)
         if exact_widths:
-            return exact_widths
-        return table_layout_for(layout, [], total_width=total_width).column_widths
-    return []
-
-
-def _layout_style(layout):
-    if isinstance(layout, TableLayout):
-        return layout.style
-    return TableCellStyle()
+            return TableLayout(layout, [], '', exact_widths, TableCellStyle(), '', [])
+        resolved = table_layout_for(layout, [], total_width=total_width)
+        if len(resolved.column_widths) == col_count:
+            return resolved
+    return None
 
 
 def _positive_int(value, default):
@@ -163,14 +165,17 @@ def apply_table_width_profiles(hwpx_path, table_layouts):
             sz = tbl.find('hp:sz', ns)
             if sz is not None:
                 total_width = _positive_int(sz.attrib.get('width'), total_width)
-            widths = _layout_widths(layout, col_count, total_width)
+            resolved_layout = _resolved_layout(layout, col_count, total_width)
+            if resolved_layout is None:
+                continue
+            widths = _scaled_widths(resolved_layout.column_widths, total_width)
             if not widths:
                 continue
-            style = _layout_style(layout)
+            style = resolved_layout.style
             border_refs = ensure_table_border_fills(header_root, style)
             header_changed = header_changed or border_refs.changed
             tbl.set('borderFillIDRef', border_refs.body_id)
-            spans = _span_by_addr(layout)
+            spans = _span_by_addr(resolved_layout)
             for tc in tbl.findall('.//hp:tc', ns):
                 cell_addr = tc.find('hp:cellAddr', ns)
                 cell_sz = tc.find('hp:cellSz', ns)

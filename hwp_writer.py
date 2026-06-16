@@ -2,7 +2,7 @@ import importlib
 import sys
 
 from document_hierarchy import hwp_com_style, parse_hierarchy_item
-from table_settings import calc_row_heights
+from table_settings import TABLE_TOTAL_WIDTH, calc_row_heights
 from table_layout import table_layout_for
 
 
@@ -66,14 +66,20 @@ def _clean_column_widths(column_widths):
     return column_widths
 
 
-def insert_table(hwp, header, rows, table_role=None, column_widths=None):
+def _clean_total_width(total_width):
+    if type(total_width) is int and total_width > 0:
+        return total_width
+    return TABLE_TOTAL_WIDTH
+
+
+def insert_table(hwp, header, rows, table_role=None, column_widths=None, total_width=None):
     all_rows = ([header] if header else []) + rows
     if not all_rows:
         return
     num_rows = len(all_rows)
     num_cols = max(len(r) for r in all_rows)
     role = table_role if isinstance(table_role, str) else None
-    layout = table_layout_for(header or [], rows, role, _clean_column_widths(column_widths))
+    layout = table_layout_for(header or [], rows, role, _clean_column_widths(column_widths), total_width=_clean_total_width(total_width))
     col_widths = layout.column_widths
     row_heights = calc_row_heights(header or [], rows, col_widths)
     act = hwp.CreateAction('TableCreate')
@@ -128,7 +134,7 @@ def insert_table(hwp, header, rows, table_role=None, column_widths=None):
     break_para(hwp)
 
 
-def build_doc(hwp, blocks):
+def build_doc(hwp, blocks, table_total_width=None):
     for blk in blocks:
         t = blk.get('type')
 
@@ -188,6 +194,7 @@ def build_doc(hwp, blocks):
                 blk.get('rows', []),
                 table_role=blk.get('table_role'),
                 column_widths=blk.get('column_widths'),
+                total_width=table_total_width,
             )
 
         elif t == 'official_header':
