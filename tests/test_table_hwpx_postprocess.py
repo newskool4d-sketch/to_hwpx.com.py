@@ -63,6 +63,31 @@ def _make_section_xml(col_count: int) -> bytes:
     return xml.encode("utf-8")
 
 
+def _make_section_xml_without_table_size(col_count: int) -> bytes:
+    cells: list[str] = []
+    for row in range(2):
+        for col in range(col_count):
+            cells.append(
+                f'<hp:tc header="0" hasMargin="0">'
+                f'<hp:cellAddr colAddr="{col}" rowAddr="{row}"/>'
+                f'<hp:cellSpan colSpan="1" rowSpan="1"/>'
+                f'<hp:cellSz width="1" height="900"/>'
+                f"</hp:tc>"
+            )
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        f'<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="{HP_NS}">'
+        '<hp:p><hp:run><hp:secPr>'
+        '<hp:pagePr width="20000" height="28000">'
+        '<hp:margin left="2500" right="1500" top="1000" bottom="1000" header="0" footer="0" gutter="0"/>'
+        "</hp:pagePr>"
+        "</hp:secPr></hp:run></hp:p>"
+        f'<hp:tbl colCnt="{col_count}" rowCnt="2">'
+        f'{"".join(cells)}</hp:tbl></hs:sec>'
+    )
+    return xml.encode("utf-8")
+
+
 def test_postprocess_applies_layout_widths_and_cell_margins(tmp_path: Path) -> None:
     hwpx_path = tmp_path / "sample.hwpx"
     with zipfile.ZipFile(hwpx_path, "w") as zf:
@@ -116,6 +141,36 @@ def test_postprocess_applies_layout_widths_and_cell_margins(tmp_path: Path) -> N
         "top": "120",
         "bottom": "120",
     }
+
+
+def test_postprocess_uses_page_content_width_when_table_size_is_missing(tmp_path: Path) -> None:
+    hwpx_path = tmp_path / "page-width.hwpx"
+    with zipfile.ZipFile(hwpx_path, "w") as zf:
+        zf.writestr("Contents/header.xml", _make_header_xml())
+        zf.writestr("Contents/section0.xml", _make_section_xml_without_table_size(2))
+
+    layout = table_layout_from_block(
+        {
+            "type": "table",
+            "header": ["용어", "정의"],
+            "rows": [["위탁", "사무를 외부 기관에 맡기는 방식"]],
+        }
+    )
+
+    apply_table_width_profiles(hwpx_path, [layout])
+
+    with zipfile.ZipFile(hwpx_path, "r") as zf:
+        root = ET.fromstring(zf.read("Contents/section0.xml"))
+    first_row_widths: list[int] = []
+    for cell in root.findall(".//hp:tc", NS):
+        cell_addr = cell.find("hp:cellAddr", NS)
+        cell_sz = cell.find("hp:cellSz", NS)
+        assert cell_addr is not None
+        assert cell_sz is not None
+        if cell_addr.attrib["rowAddr"] == "0":
+            first_row_widths.append(int(cell_sz.attrib["width"]))
+
+    assert first_row_widths == [4800, 11200]
 
 
 def test_postprocess_applies_merged_cell_spans(tmp_path: Path) -> None:

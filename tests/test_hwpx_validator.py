@@ -51,19 +51,20 @@ def _cell_xml(
     col_span: int = 1,
     row_span: int = 1,
     header: bool = False,
+    width: int | None = None,
 ) -> str:
     header_value = "1" if header else "0"
-    width = 2000 * col_span
+    cell_width = width if width is not None else 2000 * col_span
     return (
         f'<hp:tc header="{header_value}" hasMargin="1" borderFillIDRef="{border_id}">'
         f'<hp:cellAddr colAddr="{col}" rowAddr="{row}"/>'
         f'<hp:cellSpan colSpan="{col_span}" rowSpan="{row_span}"/>'
-        f'<hp:cellSz width="{width}" height="900"/>'
+        f'<hp:cellSz width="{cell_width}" height="900"/>'
         "</hp:tc>"
     )
 
 
-def _section_xml(extra_cell: str = "") -> bytes:
+def _section_xml(extra_cell: str = "", table_width: int | None = None) -> bytes:
     cells = [
         _cell_xml(0, 0, "4", col_span=2, header=True),
         _cell_xml(0, 1, "4", header=True),
@@ -72,10 +73,13 @@ def _section_xml(extra_cell: str = "") -> bytes:
         _cell_xml(1, 1, "3"),
         _cell_xml(1, 2, "3"),
     ]
+    size_xml = f'<hp:sz width="{table_width}"/>' if table_width is not None else ""
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         f'<hs:sec xmlns:hs="{HS_NS}" xmlns:hp="{HP_NS}">'
-        f'<hp:tbl rowCnt="2" colCnt="3" borderFillIDRef="3">{"".join(cells)}{extra_cell}</hp:tbl>'
+        f'<hp:tbl rowCnt="2" colCnt="3" borderFillIDRef="3">'
+        f"{size_xml}"
+        f'{"".join(cells)}{extra_cell}</hp:tbl>'
         "</hs:sec>"
     )
     return xml.encode("utf-8")
@@ -131,3 +135,26 @@ def test_validate_hwpx_reports_merged_cell_bounds_errors(tmp_path: Path) -> None
     # Then
     assert not report.ok
     assert "cellspan-out-of-bounds" in {issue.code for issue in report.issues}
+
+
+def test_validate_hwpx_reports_header_style_contract_errors(tmp_path: Path) -> None:
+    hwpx_path = tmp_path / "bad-header-style.hwpx"
+    section = _section_xml().replace(b'borderFillIDRef="4"', b'borderFillIDRef="3"')
+    _write_hwpx(hwpx_path, _header_xml(), section)
+
+    report = validate_hwpx(hwpx_path)
+
+    assert not report.ok
+    assert {"header-borderfill-missing-fill", "header-body-borderfill-not-separated"} <= {
+        issue.code for issue in report.issues
+    }
+
+
+def test_validate_hwpx_reports_unmerged_row_width_mismatch(tmp_path: Path) -> None:
+    hwpx_path = tmp_path / "bad-row-width.hwpx"
+    _write_hwpx(hwpx_path, _header_xml(), _section_xml(table_width=7000))
+
+    report = validate_hwpx(hwpx_path)
+
+    assert not report.ok
+    assert "row-width-mismatch" in {issue.code for issue in report.issues}

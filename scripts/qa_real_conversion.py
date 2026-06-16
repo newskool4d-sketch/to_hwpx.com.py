@@ -3,15 +3,12 @@ from __future__ import annotations
 import argparse
 import importlib
 import os
-import subprocess
 import sys
 import tempfile
 import uuid
-from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Protocol
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +18,8 @@ if str(REPO_ROOT) not in sys.path:
 from hwpx_validator import format_report
 from hwpx_validator import validate_hwpx
 from scripts.hwp_roundtrip_check import run_hwp_open_roundtrip
+from scripts.qa_command import CommandRunner
+from scripts.qa_command import run_subprocess_command
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,17 +29,6 @@ class QaSample:
     output_path: Path
     expected_tables: int
     expected_merged_cells: int
-
-
-@dataclass(frozen=True, slots=True)
-class CommandResult:
-    exit_code: int
-    stdout: str
-    stderr: str
-
-
-class CommandRunner(Protocol):
-    def __call__(self, command: Sequence[str]) -> CommandResult: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,18 +105,6 @@ def conversion_command(
     ]
 
 
-def run_subprocess_command(command: Sequence[str]) -> CommandResult:
-    result = subprocess.run(
-        list(command),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
-    return CommandResult(exit_code=result.returncode, stdout=result.stdout, stderr=result.stderr)
-
-
 def validate_sample_outputs(samples: tuple[QaSample, ...]) -> tuple[str, ...]:
     issues: list[str] = []
     for sample in samples:
@@ -153,6 +129,7 @@ def run_real_conversion_qa(
     converter_path: Path,
     python_executable: str,
     startup_timeout: int,
+    conversion_timeout: int,
     roundtrip_timeout: int,
     runner: CommandRunner = run_subprocess_command,
     skip_open_roundtrip: bool = False,
@@ -163,11 +140,14 @@ def run_real_conversion_qa(
     for sample in samples:
         command = conversion_command(python_executable, converter_path, sample, output_dir, startup_timeout)
         print(f"[QA] converting {sample.name}: {sample.source_path.name}", flush=True)
-        result = runner(command)
+        result = runner(command, conversion_timeout)
         if result.exit_code != 0:
+            timeout_line = f"timed out after {conversion_timeout} seconds\n" if result.timed_out else ""
+            cleanup = "\n".join(result.cleanup_receipts)
+            cleanup_line = f"\ncleanup:\n{cleanup}" if cleanup else ""
             issues.append(
                 f"{sample.name}: command failed exit={result.exit_code}\n"
-                f"command: {' '.join(command)}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+                f"{timeout_line}command: {' '.join(command)}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}{cleanup_line}"
             )
         else:
             print(f"[QA] converted {sample.name}: {sample.output_path}", flush=True)
@@ -220,6 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--converter", default=str(REPO_ROOT / "to_hwpx_com.py"))
     parser.add_argument("--python", default=sys.executable, help="Python executable used to run the converter CLI")
     parser.add_argument("--startup-timeout", type=int, default=20)
+    parser.add_argument("--conversion-timeout", type=int, default=120)
     parser.add_argument("--roundtrip-timeout", type=int, default=90)
     parser.add_argument("--skip-open-roundtrip", action="store_true", help="Skip opening merged HWPX through HWP COM")
     args = parser.parse_args(argv)
@@ -229,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
         converter_path=Path(args.converter),
         python_executable=args.python,
         startup_timeout=args.startup_timeout,
+        conversion_timeout=args.conversion_timeout,
         roundtrip_timeout=args.roundtrip_timeout,
         skip_open_roundtrip=args.skip_open_roundtrip,
     )

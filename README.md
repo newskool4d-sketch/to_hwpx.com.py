@@ -51,6 +51,8 @@ python to_hwpx_com.py --preflight --startup-timeout 90
 python to_hwpx_com.py 문서.md --startup-timeout 90
 ```
 
+실제 변환 QA와 HWPX 내부 검증 명령은 [QA and HWPX Validation](docs/qa-and-validation.md)을 참조하세요.
+
 ### 문서 끝 표시 삽입
 
 ```bash

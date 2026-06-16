@@ -8,8 +8,9 @@ from typing import Final
 
 
 HH_NS: Final = "http://www.hancom.co.kr/hwpml/2011/head"
+HC_NS: Final = "http://www.hancom.co.kr/hwpml/2011/core"
 HP_NS: Final = "http://www.hancom.co.kr/hwpml/2011/paragraph"
-NS: Final = {"hh": HH_NS, "hp": HP_NS}
+NS: Final = {"hh": HH_NS, "hc": HC_NS, "hp": HP_NS}
 REQUIRED_ENTRIES: Final = ("mimetype", "Contents/header.xml")
 
 
@@ -134,3 +135,18 @@ def border_fill_ids(header_root: ET.Element, issues: list[HwpxValidationIssue]) 
             f"itemCnt={declared} but {len(border_ids)} borderFill elements exist",
         )
     return border_ids
+
+
+def filled_border_fill_ids(header_root: ET.Element) -> set[str]:
+    border_fills = header_root.find(".//hh:borderFills", NS)
+    if border_fills is None:
+        return set()
+    filled_ids: set[str] = set()
+    for border_fill in border_fills.findall("hh:borderFill", NS):
+        border_id = border_fill.attrib.get("id")
+        if border_id is None:
+            continue
+        brush = border_fill.find("hc:fillBrush/hc:winBrush", NS)
+        if brush is not None and brush.attrib.get("faceColor"):
+            filled_ids.add(border_id)
+    return filled_ids

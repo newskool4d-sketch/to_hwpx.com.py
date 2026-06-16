@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import importlib.util
 import zipfile
+from collections.abc import Sequence
 from pathlib import Path
 
 from scripts.qa_real_conversion import QaSample
 from scripts.qa_real_conversion import conversion_command
+from scripts.qa_real_conversion import run_real_conversion_qa
 from scripts.qa_real_conversion import validate_sample_outputs
 from scripts.qa_real_conversion import write_qa_report
 from scripts.qa_real_conversion import write_sample_inputs
+from scripts.qa_command import CommandResult
 
 
 HH_NS = "http://www.hancom.co.kr/hwpml/2011/head"
@@ -104,3 +107,30 @@ def test_write_qa_report_persists_summary(tmp_path: Path) -> None:
     # Then
     assert report_path == tmp_path / "qa-report.txt"
     assert "OK: real conversion QA passed" in report_path.read_text(encoding="utf-8")
+
+
+def test_run_real_conversion_qa_passes_conversion_timeout_to_runner(tmp_path: Path) -> None:
+    if importlib.util.find_spec("openpyxl") is None:
+        return
+    seen_timeouts: list[int] = []
+
+    def runner(command: Sequence[str], timeout: int) -> CommandResult:
+        seen_timeouts.append(timeout)
+        output_path = Path(command[command.index("-o") + 1]) / f"{Path(command[3]).stem}.hwpx"
+        _write_minimal_hwpx(output_path)
+        return CommandResult(exit_code=0, stdout="", stderr="")
+
+    report = run_real_conversion_qa(
+        work_dir=tmp_path,
+        converter_path=Path("to_hwpx_com.py"),
+        python_executable="python",
+        startup_timeout=20,
+        conversion_timeout=7,
+        roundtrip_timeout=90,
+        runner=runner,
+        skip_open_roundtrip=True,
+    )
+
+    assert seen_timeouts == [7, 7, 7]
+    assert not report.ok
+    assert "expected at least 1 table" in report.issues[0]

@@ -71,6 +71,43 @@ def _layout_style(layout):
     return TableCellStyle()
 
 
+def _positive_int(value, default):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed <= 0:
+        return default
+    return parsed
+
+
+def _nonnegative_int(value):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(parsed, 0)
+
+
+def _section_content_width(root, ns, default_width):
+    page_pr = root.find('.//hp:pagePr', ns)
+    if page_pr is None:
+        return default_width
+    page_width = _positive_int(page_pr.attrib.get('width'), default_width)
+    margin = page_pr.find('hp:margin', ns)
+    if margin is None:
+        return page_width
+    horizontal_margin = (
+        _nonnegative_int(margin.attrib.get('left'))
+        + _nonnegative_int(margin.attrib.get('right'))
+        + _nonnegative_int(margin.attrib.get('gutter'))
+    )
+    content_width = page_width - horizontal_margin
+    if content_width <= 0:
+        return default_width
+    return content_width
+
+
 def _ensure_cell_margin(tc, ns, style):
     cell_margin = tc.find('hp:cellMargin', ns)
     if cell_margin is None:
@@ -114,6 +151,7 @@ def apply_table_width_profiles(hwpx_path, table_layouts):
         changed = False
         header_changed = False
         tables = root.findall('.//hp:tbl', ns)
+        section_width = _section_content_width(root, ns, TABLE_TOTAL_WIDTH)
         for ti, tbl in enumerate(tables):
             if ti >= len(table_layouts):
                 break
@@ -121,10 +159,10 @@ def apply_table_width_profiles(hwpx_path, table_layouts):
             col_count = int(tbl.attrib.get('colCnt', '0') or 0)
             if col_count <= 1:
                 continue
-            total_width = TABLE_TOTAL_WIDTH
+            total_width = section_width
             sz = tbl.find('hp:sz', ns)
             if sz is not None:
-                total_width = int(sz.attrib.get('width', total_width) or total_width)
+                total_width = _positive_int(sz.attrib.get('width'), total_width)
             widths = _layout_widths(layout, col_count, total_width)
             if not widths:
                 continue
