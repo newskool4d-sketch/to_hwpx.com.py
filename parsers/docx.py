@@ -5,7 +5,7 @@ import re
 from typing import Literal, assert_never
 
 from blocks import BlockDict
-from table_grid import block_rows_from_grid
+from table_grid import MAX_TABLE_SPAN, block_rows_from_grid
 
 
 DocxBlockTag = Literal["paragraph", "table"]
@@ -72,7 +72,9 @@ def _docx_grid_span(tc) -> int:
     grid_span = tc.tcPr.gridSpan if tc.tcPr is not None else None
     if grid_span is None or grid_span.val is None:
         return 1
-    return max(1, int(grid_span.val))
+    # 손상/악의적 docx의 w:gridSpan에 매우 큰 값이 들어오면 아래 range(...) 루프가
+    # 그만큼 반복돼 OOM/행업이 된다 — table_grid.py와 동일한 상한 적용.
+    return min(MAX_TABLE_SPAN, max(1, int(grid_span.val)))
 
 
 def _docx_vmerge_value(tc) -> str:

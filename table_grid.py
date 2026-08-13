@@ -3,6 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+# 병합 셀 span 상한. 실제 문서에서 병합 범위가 이 값을 넘는 경우는 없다고 봐도
+# 무방하다 — 손상되거나 악의적인 문서가 rowspan/colspan에 매우 큰 값을 넣으면
+# 그리드 확장(_ensure_grid_cell)이 span 곱만큼 셀을 만들려 시도해 OOM/행업이 된다.
+MAX_TABLE_SPAN = 1000
+
+
 @dataclass(frozen=True, slots=True)
 class SourceCell:
     text: str
@@ -11,7 +17,7 @@ class SourceCell:
 
 
 def _normalized_span(value: int) -> int:
-    return max(1, value)
+    return min(MAX_TABLE_SPAN, max(1, value))
 
 
 def _ensure_grid_cell(grid: list[list[str]], row: int, col: int) -> None:
